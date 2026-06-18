@@ -36,4 +36,4 @@ Since the application is written entirely in client-side HTML, CSS, and JS (load
   # Python 3
   python -m http.server 8000
   ```
-  Then browse to `http://localhost:8000/F1_tracks/index.html`.
+  Then browse to `http://localhost:8000/index.html`.
