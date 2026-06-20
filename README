@@ -1,0 +1,39 @@
+# F1 LINE RACER SIM - Autonomous Line-Following Visualizer
+
+A professional, modern, and clean web visualizer interface designed for an autonomous Formula 1 line-following project. It features interactive 3D rendering powered by Three.js.
+
+## Key Features
+
+1. **Procedural 3D Track Meshes**:
+   - Renders complex 3D tracks from real-world F1 coordinates: Monaco, Monza, Spa-Francorchamps (with elevation), and Suzuka (with a 3D overpass bridge).
+   - Generates dark asphalt, central yellow guide lines, and alternating red/white curbs along curves.
+   - Responds to real-time sliders for "Track Width" and "Complexity / Resolution".
+
+2. **Kinematic F1 Vehicle Simulator**:
+   - Mimics realistic vehicle motion using bicycle-model dynamics (yaw rate, slip angle, acceleration, and braking limits).
+   - Speed management automatically decelerates the vehicle in tight corners and speeds up on straights.
+
+3. **PID Steering Control Tuning**:
+   - Autonomous line tracking uses a PID (Proportional, Integral, Derivative) feedback loop measuring lateral offset (Cross-Track Error) ahead of the vehicle.
+   - Adjust `Kp`, `Ki`, `Kd` gains and the lookahead preview offset in real time to observe steering stability, dampening, or corner-cutting.
+   - Toggles to **Manual Drive mode** so you can steer the car yourself using WASD or Arrow Keys!
+
+4. **Telemetry HUD & Records**:
+   - Tracks current speed, Cross-Track Error, steering angles, current lap times, and records past completed laps in a session table.
+   - Plots a real-time running line chart (SVG-based) showing the history of lateral error deviation.
+
+5. **3D Miniature Track Grid**:
+   - Secondary rotating 3D canvas cards at the bottom show small isolated versions of Monza, Spa, Suzuka, and Monaco.
+   - Clicking a card instantly swaps and loads it into the main visualizer.
+
+## How to Run
+
+Since the application is written entirely in client-side HTML, CSS, and JS (loading Three.js through stable CDN libraries), you can run it instantly:
+
+- **Direct Open**: Double-click `index.html` to open it directly in any modern web browser.
+- **Local Server (Recommended)**: Serve the workspace folder with a local server for optimal asset loading:
+  ```bash
+  # Python 3
+  python -m http.server 8000
+  ```
+  Then browse to `http://localhost:8000/index.html`.
