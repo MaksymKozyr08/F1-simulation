@@ -4,7 +4,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 export class Car {
     mesh: THREE.Group = new THREE.Group();
 
-    // Конструктор просто ініціалізує групу
+    // Just initializes the groop
     constructor() {}
 
     async load(path: string): Promise<void> {
@@ -23,21 +23,22 @@ export class Car {
         this.mesh.add(model);
         model.rotation.y = - Math.PI / 2;
 
-        // Це стрілка для мене, щоб бачити, куди дивиться модель
-        // Якщо вистачить часу додам таких для відображення сил
         const arrowHelper = new THREE.ArrowHelper(
-            new THREE.Vector3(0, 0, 1), // напрямок
-            new THREE.Vector3(0, 0, 0), // початок
-            2,                          // довжина
-            0xff0000                    // колір
+            new THREE.Vector3(0, 0, 1),
+            new THREE.Vector3(0, 0, 0),
+            2,
+            0xff0000
         );
         this.mesh.add(arrowHelper);
     }
 
 
-    update(position: THREE.Vector3, direction: THREE.Vector3) {
+    update(position: THREE.Vector3, direction: THREE.Vector3, state: any) {
+
+        //!!!!!!!!!!!!!!! If it follows the lign !!!!!!!!!!!!!!!!!!!!!!!
         this.mesh.position.copy(position);
         this.mesh.lookAt(position.clone().add(direction));
+        //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     }
 
 }

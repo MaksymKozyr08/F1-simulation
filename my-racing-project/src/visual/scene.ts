@@ -5,15 +5,15 @@ scene.background = new THREE.Color(0x1a1a1a);
 export const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 
-// Щоб моделі не були тьмяні
+// So models won`t be dim
 renderer.toneMapping = THREE.ACESFilmicToneMapping; 
 renderer.toneMappingExposure = 1.2; 
-// Для правильної передачі кольору
+// For colours 
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 document.body.appendChild(renderer.domElement);
 
-// Камери
+// Cameras
 export const cameras = {
     front: new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000),
     top: new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000),
@@ -22,20 +22,20 @@ export const cameras = {
 
 cameras.front.position.set(15, 15, 15); 
 cameras.front.lookAt(0, 0, 0);
-cameras.top.position.set(0, 30, 0); 
+cameras.top.position.set(0, 70, 0); 
 cameras.top.lookAt(0, 0, 0);
 
-// Сіточка
+// Background net
 const grid = new THREE.GridHelper(500, 500, 0x444444, 0x222222);
 scene.add(grid);
 
-// Світло та тіні
+// Light and shadows
 // DirectionalLight
 const dirLight = new THREE.DirectionalLight(0xffffff, 2.5);
 dirLight.position.set(15, 25, 15);
 dirLight.castShadow = true;
 
-// |Трошки тіней 
+// Shadow
 dirLight.shadow.mapSize.width = 2048;
 dirLight.shadow.mapSize.height = 2048;
 scene.add(dirLight);

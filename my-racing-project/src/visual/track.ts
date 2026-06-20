@@ -1,12 +1,31 @@
 import * as THREE from 'three';
 
 export function createTrack(points: THREE.Vector3[]) {
-    const curve = new THREE.CatmullRomCurve3(points, true);
-    const curvePoints = curve.getSpacedPoints(1000);
+
+    // Window smothing algorithm for points
+    const windowSize = 10;
+    const smoothedPoints: THREE.Vector3[] = [];
+    const len = points.length;
+    
+    for (let i = 0; i < len; i++) {
+        const sum = new THREE.Vector3();
+        let count = 0;
+        for (let j = -windowSize; j <= windowSize; j++) {
+            // Use modulo for closed loop wrap-around
+            let idx = (i + j + len) % len;
+            sum.add(points[idx]);
+            count++;
+        }
+        smoothedPoints.push(sum.divideScalar(count));
+    }
+
+    // create curve and break into equal pieces
+    const curve = new THREE.CatmullRomCurve3(smoothedPoints, true, 'centripetal', 0.5);
+    const curvePoints = curve.getSpacedPoints(3500);
     
     const trackGroup = new THREE.Group();
 
-    // Центральна лінія
+    // Main track
     const centerGeometry = new THREE.BufferGeometry().setFromPoints(curvePoints);
     const centerMaterial = new THREE.LineBasicMaterial({ 
         color: 0xf5f5f5, 
@@ -17,7 +36,7 @@ export function createTrack(points: THREE.Vector3[]) {
 
     trackGroup.add(centerLine);
 
-    // Пунктирні межі
+    // Borders
     const dashMaterial = new THREE.LineDashedMaterial({
         color: 0x808080,
         dashSize: 1,
@@ -35,6 +54,7 @@ export function createTrack(points: THREE.Vector3[]) {
         const point = curvePoints[i]; 
         const prev = curvePoints[i - 1] ?? curvePoints[i]; 
 
+        // calculate using normal
         const tangent = point.clone().sub(prev).normalize(); 
         const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize(); 
 
@@ -57,53 +77,7 @@ export function createTrack(points: THREE.Vector3[]) {
 
     trackGroup.add(sideLine1, sideLine2);
 
-
-
-    //!!!!!!!!!!!!!!!!!!!!! Сюди додати оптимальну траекторію !!!!!!!!!!!!!!!!!!!
-
- /*   const apexPoints: THREE.Vector3[] = [];
-const step = 40; // Крок для вибірки точок (чим більше, тим менше точок для кривої)
-
-for (let i = 0; i < curvePoints.length; i += step) {
-    const t = i / curvePoints.length;
-    const pos = curvePoints[i].clone();
-    const tangent = curve.getTangentAt(t);
-    const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
-
-    // РОЗРАХУНОК КРИВИЗНИ ДЛЯ АПЕКСУ
-    // Дивимось трохи вперед і назад, щоб зрозуміти, чи це поворот
-    const prevT = Math.max(0, t - 0.05);
-    const nextT = Math.min(1, t + 0.05);
-    const v1 = curve.getPointAt(prevT);
-    const v2 = curve.getPointAt(t);
-    const v3 = curve.getPointAt(nextT);
+    //!!!!!!!!!!!!!!!!!!!!! Add optimal trajectory here !!!!!!!!!!!!!!!!!!!
     
-    // Вектор відхилення від прямої
-    const deviation = new THREE.Vector3().subVectors(v2.clone().multiplyScalar(2), v1.clone().add(v3));
-    const curvature = deviation.length() * 100; // Коефіцієнт чутливості
-
-    // Якщо це поворот (кривизна > порогу), зміщуємось до внутрішнього апексу
-    if (curvature > 0.5) {
-        // -1.5 або 1.5 залежно від напрямку нормалі
-        const side = deviation.dot(normal) > 0 ? -1.5 : 1.5;
-        pos.add(normal.multiplyScalar(side));
-    }
-    
-    pos.y = 0.05; // Трохи вище за асфальт
-    apexPoints.push(pos);
-}
-
-// Створюємо нову криву через ці "ідеальні" точки
-const racingLineCurve = new THREE.CatmullRomCurve3(apexPoints, true);
-const racingLinePoints = racingLineCurve.getSpacedPoints(500);
-
-const optimalLine = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints(racingLinePoints),
-    new THREE.LineBasicMaterial({ color: 0xff0000, linewidth: 3 })
-);
-
-trackGroup.add(optimalLine);*/
-//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    
-    return { trackGroup, curve }; // Повертаємо об'єкт і математичну криву
+    return { trackGroup, curve };
 }

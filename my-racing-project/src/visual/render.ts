@@ -27,10 +27,28 @@ renderer.setSize(width, height);
 
 controls = new OrbitControls(cameras.front, renderer.domElement);
 
-const points = Array.from({ length: 10 }, () => 
-    new THREE.Vector3((Math.random() - 0.5) * 30, 0, (Math.random() - 0.5) * 30)
-);
+async function loadTrack() {
+    const response = await fetch('monaco_coords.json');
+    const rawData: [number, number][] = await response.json();
 
+    // Centre of the Monaco circuit (used as origin for local coordinates)
+    const centerLon = 7.4258;
+    const centerLat = 43.7367;
+
+    // Scale factor  - degrees to meters
+    const scale = 10000;
+
+    return rawData.map((coord: [number, number]) => {
+        const latCorrection = Math.cos(centerLat * Math.PI / 180);
+
+        const x = (coord[0] - centerLon) * scale * latCorrection;
+        const z = -(coord[1] - centerLat) * scale; // negate so north = -Z (Three.js convention)
+
+        return new THREE.Vector3(x, 0, z);
+    });
+}
+
+const points = await loadTrack();
 const track = createTrack(points);
 curve = track.curve;
 scene.add(track.trackGroup);
@@ -40,13 +58,13 @@ await car.load('/car_model/scene.gltf');
 scene.add(car.mesh);
 }
 
-// Функція для малювання у конкретному вікні (viewport)
+// Viewpoint for each window
 function renderView(camera: THREE.PerspectiveCamera, left: number, bottom: number, width: number, height: number) {
     renderer.setViewport(left, bottom, width, height);
     renderer.setScissor(left, bottom, width, height);
     renderer.setScissorTest(true);
     
-    // Очищаємо буфер перед малюванням кожного вікна
+    // clean buffer before drawing
     renderer.clear(); 
     
     camera.aspect = width / height;
@@ -55,12 +73,12 @@ function renderView(camera: THREE.PerspectiveCamera, left: number, bottom: numbe
     renderer.render(scene, camera); 
 }
 
-export function runRender(t: number) {
+export function runRender(t: number, state: any) {
 
-    //!!!!!!!!!!!!!!!!!!!!!! поміняти щоб підключити фізику !!!!!!!!!!!!!!!!!!!!!!!
+    //!!!!!!!!!!!!!!!!!!!!!! Connect Physics here !!!!!!!!!!!!!!!!!!!!!!!
     const position = curve.getPointAt(t);
     const tangent = curve.getTangentAt(t);
-    car.update(position, tangent);
+    car.update(position, tangent, state);
     //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     controls.update();
@@ -68,11 +86,11 @@ export function runRender(t: number) {
     const w = viewerBody.clientWidth / 3;
     const h = viewerBody.clientHeight;
 
-    // 1. Front
+    // Front
     renderView(cameras.front, 0, 0, w, h);
-    // 2. Top
+    // Top
     renderView(cameras.top, w * 2, 0, w, h);
-    // 3. Inside
+    // Inside
     const offset = new THREE.Vector3(0, 1.5, 0);
     offset.applyQuaternion(car.mesh.quaternion); //прив'язуємо до повороту машини
     const cameraPosition = car.mesh.position.clone().add(offset); // трохки піднімаємо основу камеру

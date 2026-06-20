@@ -4,16 +4,16 @@ import { appInitialized, simulation } from './app';
 let lastTime = performance.now();
 
 async function init() {
-    // 1. Спочатку чекаємо на ініціалізацію
+    // Waiting for intitialization
     await Promise.all([setupRender(), appInitialized]);
-    // 2. Потім запускаємо цикл
+    // Run the loop
     console.log("Initilized...");
 
     requestAnimationFrame(animate);
 }
 
 let totalDistance = 0; 
-const TRACK_LENGTH = 1000;
+const TRACK_LENGTH = 3337;
 
 function animate(currentTime: number) {
     requestAnimationFrame(animate);
@@ -27,9 +27,9 @@ function animate(currentTime: number) {
     if (state) {
 
     totalDistance += state.vx * dt; 
-    // t (від 0 до 1)
+    // t (from 0 to 1)
     const t = (totalDistance % TRACK_LENGTH) / TRACK_LENGTH; 
-        runRender(t); 
+        runRender(t, state); 
     }
 
 }
