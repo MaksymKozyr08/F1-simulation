@@ -38,46 +38,64 @@ scene.add(track.trackGroup);
 car = new Car();
 await car.load('/car_model/scene.gltf');
 scene.add(car.mesh);
+return { track, car };
 }
 
-// Функція для малювання у конкретному вікні (viewport)
-function renderView(camera: THREE.PerspectiveCamera, left: number, bottom: number, width: number, height: number) {
-    renderer.setViewport(left, bottom, width, height);
-    renderer.setScissor(left, bottom, width, height);
-    renderer.setScissorTest(true);
-    
-    // Очищаємо буфер перед малюванням кожного вікна
-    renderer.clear(); 
-    
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
-    
-    renderer.render(scene, camera); 
+export const cameraKeys = ['orbit', 'cockpit', 'map'] as const;
+export type CameraKey = typeof cameraKeys[number];
+export let activeCameraKey: CameraKey = 'orbit';
+
+export function cycleCamera() {
+    const currentIndex = cameraKeys.indexOf(activeCameraKey);
+    activeCameraKey = cameraKeys[(currentIndex + 1) % cameraKeys.length];
+    console.log(`[CAMERA SWITCH] Switched to: ${activeCameraKey}`);
+}
+
+export function setRenderCurve(newCurve: any) {
+    curve = newCurve;
 }
 
 export function runRender(t: number) {
-
-    //!!!!!!!!!!!!!!!!!!!!!! поміняти щоб підключити фізику !!!!!!!!!!!!!!!!!!!!!!!
     const position = curve.getPointAt(t);
     const tangent = curve.getTangentAt(t);
     car.update(position, tangent);
-    //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-    controls.update();
+    // Update inside/cockpit camera position
+    const offset = new THREE.Vector3(0, 0.45, 0);
+    offset.applyQuaternion(car.mesh.quaternion);
+    const cameraPosition = car.mesh.position.clone().add(offset);
+    cameras.inside.position.lerp(cameraPosition, 0.1);
+    cameras.inside.lookAt(car.mesh.position.clone().add(tangent.clone().multiplyScalar(1.5)));
 
-    const w = viewerBody.clientWidth / 3;
+    // Choose the active camera
+    let activeCamera: THREE.PerspectiveCamera;
+    if (activeCameraKey === 'orbit') {
+        activeCamera = cameras.front;
+        controls.enabled = true;
+        const delta = car.mesh.position.clone().sub(controls.target);
+        cameras.front.position.add(delta);
+        controls.target.copy(car.mesh.position);
+        controls.update();
+    } else if (activeCameraKey === 'cockpit') {
+        activeCamera = cameras.inside;
+        controls.enabled = false;
+    } else {
+        activeCamera = cameras.top;
+        cameras.top.position.set(car.mesh.position.x, 24, car.mesh.position.z);
+        cameras.top.lookAt(car.mesh.position);
+        controls.enabled = false;
+    }
+
+    const w = viewerBody.clientWidth;
     const h = viewerBody.clientHeight;
 
-    // 1. Front
-    renderView(cameras.front, 0, 0, w, h);
-    // 2. Top
-    renderView(cameras.top, w * 2, 0, w, h);
-    // 3. Inside
-    const offset = new THREE.Vector3(0, 1.5, 0);
-    offset.applyQuaternion(car.mesh.quaternion); //прив'язуємо до повороту машини
-    const cameraPosition = car.mesh.position.clone().add(offset); // трохки піднімаємо основу камеру
-    cameras.inside.position.lerp(cameraPosition, 0.1);
-    cameras.inside.lookAt(car.mesh.position.clone().add(tangent.clone().multiplyScalar(5))); // спрямовуємо вперед
-    
-    renderView(cameras.inside, w, 0, w, h);
+    // Reset viewport and scissor to full size
+    renderer.setViewport(0, 0, w, h);
+    renderer.setScissor(0, 0, w, h);
+    renderer.setScissorTest(false);
+
+    renderer.clear();
+    activeCamera.aspect = w / h;
+    activeCamera.updateProjectionMatrix();
+    renderer.render(scene, activeCamera);
 }

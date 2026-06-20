@@ -557,6 +557,27 @@ body {
   background-color: var(--bg-color);
 }
 
+.camera-btn {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  border: 1px solid var(--border-dark);
+  padding: 2px 8px;
+  color: var(--text-main);
+  background-color: var(--bg-color);
+  cursor: pointer;
+  transition: all var(--transition-speed);
+}
+
+.camera-btn:hover {
+  background-color: var(--border-dark);
+  color: var(--bg-color);
+}
+
+.camera-btn:active {
+  transform: scale(0.96);
+}
+
 .viewer-body {
   flex-grow: 1;
   display: flex;    /*було flex*/

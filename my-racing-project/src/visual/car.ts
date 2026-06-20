@@ -12,11 +12,28 @@ export class Car {
         const gltf = await loader.loadAsync(path);
         
         const model = gltf.scene;
-        model.scale.set(0.5, 0.5, 0.5);
+        model.scale.set(0.15, 0.15, 0.15);
         
         model.traverse((node) => {
             if ((node as THREE.Mesh).isMesh) {
                 node.castShadow = true;
+                const mesh = node as THREE.Mesh;
+                if (mesh.material) {
+                    mesh.material = (mesh.material as THREE.Material).clone();
+                    const mat = mesh.material as THREE.MeshStandardMaterial;
+                    
+                    const isBody = node.name.match(/^Object_(4|5|6|7|8|9|1[0-9]|20)$/) || 
+                                   (node.parent && node.parent.name.includes('Cube.001'));
+                    if (isBody) {
+                        mat.color.setHex(0xe10600); // F1 racing red
+                        mat.roughness = 0.2;
+                        mat.metalness = 0.8;
+                    } else {
+                        mat.color.setHex(0x151515); // carbon black/wheels
+                        mat.roughness = 0.8;
+                        mat.metalness = 0.2;
+                    }
+                }
             }
         });
 

@@ -53,8 +53,7 @@ export const appInitialized = new Promise((resolve) => {
     resolveApp = resolve;
 });
 
-// Initialize Event Listeners on DOM Load
-window.addEventListener('DOMContentLoaded', () => {
+function initApp() {
   // Instantiate the physics engine core
   if (typeof RWIDVehiclePhysics !== 'undefined') {
     carPhysics = new RWIDVehiclePhysics();
@@ -72,12 +71,15 @@ window.addEventListener('DOMContentLoaded', () => {
   selectTrack(activeTrack);
   updateDrivingModeGains();
 
-  // Start the main real-time rendering and computation loop
-
-  //!!!!!!!!!!!!!!!!!!!!!!!!!!! Я забрала request animation frame бо цикл тепер по ідеї має запускатися з main !!!!!!!!!!!!!!!!!!!!!!
   resolveApp();
   console.log("F1 Line Racer Sim UI/UX Environment Ready.");
-});
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}
 
 // Main Real-Time Simulation Loop (~60 FPS)
 export function simulation(dt) {

@@ -361,6 +361,12 @@ class RWIDVehiclePhysics {
     }
 }
 
+if (typeof window !== 'undefined' && !window.RWIDVehiclePhysics) {
+    window.RWIDVehiclePhysics = RWIDVehiclePhysics;
+} else if (typeof globalThis !== 'undefined' && !globalThis.RWIDVehiclePhysics) {
+    globalThis.RWIDVehiclePhysics = RWIDVehiclePhysics;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = RWIDVehiclePhysics;
 }

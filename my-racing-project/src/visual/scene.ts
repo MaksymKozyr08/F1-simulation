@@ -20,9 +20,9 @@ export const cameras = {
     inside: new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000)
 };
 
-cameras.front.position.set(15, 15, 15); 
+cameras.front.position.set(4.5, 4.5, 4.5); 
 cameras.front.lookAt(0, 0, 0);
-cameras.top.position.set(0, 30, 0); 
+cameras.top.position.set(0, 24, 0); 
 cameras.top.lookAt(0, 0, 0);
 
 // Сіточка
