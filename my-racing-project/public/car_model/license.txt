@@ -1,0 +1,11 @@
+Model Information:
+* title:	F1 2022 concept car
+* source:	https://sketchfab.com/3d-models/f1-2022-concept-car-47bd9f66d55141958e09b7c75edfdab4
+* author:	The 3D Dude (https://sketchfab.com/The_3D_Dude)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "F1 2022 concept car" (https://sketchfab.com/3d-models/f1-2022-concept-car-47bd9f66d55141958e09b7c75edfdab4) by The 3D Dude (https://sketchfab.com/The_3D_Dude) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
