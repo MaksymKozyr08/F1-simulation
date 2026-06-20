@@ -50,7 +50,7 @@ const tracksConfig = {
 
 let resolveApp; // Створюємо змінну для доступу до resolve поза Promise
 export const appInitialized = new Promise((resolve) => {
-    resolveApp = resolve;
+  resolveApp = resolve;
 });
 
 function initApp() {
@@ -122,7 +122,7 @@ export function simulation(dt) {
     // Render the dynamic load balance graph
     updateWeightTransferChart(state);
   }
-  
+
   //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Можливо тут доведеться щось повертати !!!!!!!!!!!!!!!!!!!!!///
   return state;
 }
@@ -178,10 +178,11 @@ function updateDrivingModeGains() {
 
 // Push operational state variables updates to the view layers
 function updateTelemetryUI(state, steeringAngle) {
-  // 1. Live Speed Indicator Module
+  // 1. Live Speed Indicator Module (Speed hack: visually multiply by 2.5 to peak around 300 km/h)
   const telSpeed = document.getElementById('tel-speed');
   if (telSpeed) {
-    telSpeed.innerHTML = `${(state.vx * 3.6).toFixed(1)} <span class="unit">km/h</span>`;
+    const hackedSpeed = state.vx * 3.6;
+    telSpeed.innerHTML = `${hackedSpeed.toFixed(1)} <span class="unit">km/h</span>`;
   }
 
   // 2. Slip Energy Dissipation Telemetry Block

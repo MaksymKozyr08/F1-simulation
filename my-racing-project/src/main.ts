@@ -108,6 +108,15 @@ function generateTrackPoints(trackId: string): THREE.Vector3[] {
             points.push(new THREE.Vector3((Math.random() - 0.5) * 60, 0, (Math.random() - 0.5) * 60));
         }
     }
+    
+    // Scale up the entire track layout geometry (1.66x scale horizontally, 1.0x vertically)
+    const scaleFactor = 1.66;
+    points.forEach(p => {
+        p.x *= scaleFactor;
+        p.z *= scaleFactor;
+        p.y *= 1.0;
+    });
+    
     return points;
 }
 
@@ -429,13 +438,13 @@ function animate(currentTime: number) {
         distance += v_long * dt;
         cte += v_lat * dt;
         
-        // Find closest curve parameter using local optimization
+        // Find closest curve parameter using local optimization (optimized: 5 search points instead of 15)
         let estT = (distance / curveLength) % 1.0;
         if (estT < 0) estT += 1.0;
         
         let bestT = estT;
         let minDistanceSq = Infinity;
-        const searchPoints = 15;
+        const searchPoints = 5;
         const searchRange = 0.01;
         
         const centerPos = activeCurve.getPointAt(estT);
@@ -461,10 +470,9 @@ function animate(currentTime: number) {
         
         distance = progressT * curveLength;
         
-        // Autonomous PID steering controller execution
         if (!isManual) {
-            // Predict path heading 9 meters ahead
-            const lookaheadDist = 9.0;
+            // Predict path heading 15.0 meters ahead (1.66x scaled up from 9m)
+            const lookaheadDist = 15.0;
             const lookaheadStep = lookaheadDist / curveLength;
             const t_lookahead = (progressT + lookaheadStep) % 1.0;
             const pos_lookahead = activeCurve.getPointAt(t_lookahead);
@@ -512,8 +520,8 @@ function animate(currentTime: number) {
             }
         }
         
-        // Execute graphics rendering loop
-        runRender(progressT);
+        // Execute graphics rendering loop (optimized: passing precalculated position and tangent vectors)
+        runRender(progressT, closestCenter, closestTangent);
         
         // Override car position and orientation using physical state vector
         const finalPosition = closestCenter.clone().add(closestNormal.clone().multiplyScalar(cte));

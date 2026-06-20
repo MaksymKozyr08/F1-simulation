@@ -15,9 +15,9 @@ export function createTrack(points: THREE.Vector3[]) {
     });
     const centerGeometry = new THREE.BufferGeometry().setFromPoints(centerPoints);
     const centerMaterial = new THREE.LineBasicMaterial({ 
-        color: 0x111111, 
+        color: 0xffffff, 
         transparent: true, 
-        opacity: 0.8 
+        opacity: 1.0 
     });
     const centerLine = new THREE.Line(centerGeometry, centerMaterial);
 
@@ -25,17 +25,17 @@ export function createTrack(points: THREE.Vector3[]) {
 
     // Dashed boundaries with slight elevation to prevent Z-fighting
     const dashMaterial = new THREE.LineDashedMaterial({
-        color: 0x444444,
+        color: 0xffffff,
         dashSize: 1,
         gapSize: 0.5,
         transparent: true,
-        opacity: 0.7
+        opacity: 1.0
     });
     
     const sidePoints1: THREE.Vector3[] = [];
     const sidePoints2: THREE.Vector3[] = [];
-    const roadWidth = 2;
-    const borderThickness = 0.18;
+    const roadWidth = 1.0;
+    const borderThickness = 0.09;
     
     for (let i = 0; i < n; i++) { 
         const point = curvePoints[i]; 
@@ -100,6 +100,7 @@ export function createTrack(points: THREE.Vector3[]) {
     });
     const roadMesh = new THREE.Mesh(roadGeometry, roadMaterial);
     roadMesh.receiveShadow = true;
+    roadMesh.visible = false; // Hide 3D road to reduce fill-rate overhead
     trackGroup.add(roadMesh);
 
     // --- Build 3D White Borders/Curbs Mesh ---
@@ -160,6 +161,7 @@ export function createTrack(points: THREE.Vector3[]) {
     const borderMesh = new THREE.Mesh(borderGeometry, borderMaterial);
     borderMesh.castShadow = true;
     borderMesh.receiveShadow = true;
+    borderMesh.visible = false; // Hide outer boundary curbs to reduce fill-rate overhead
     trackGroup.add(borderMesh);
 
 

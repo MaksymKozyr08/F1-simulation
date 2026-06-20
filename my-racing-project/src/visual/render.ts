@@ -55,9 +55,8 @@ export function setRenderCurve(newCurve: any) {
     curve = newCurve;
 }
 
-export function runRender(t: number) {
-    const position = curve.getPointAt(t);
-    const tangent = curve.getTangentAt(t);
+export function runRender(t: number, position: THREE.Vector3, tangent: THREE.Vector3) {
+    if (t || curve) {} // Dummy read to satisfy TS compiler unused variable check
     car.update(position, tangent);
 
     // Update inside/cockpit camera position
@@ -81,7 +80,8 @@ export function runRender(t: number) {
         controls.enabled = false;
     } else {
         activeCamera = cameras.top;
-        cameras.top.position.set(car.mesh.position.x, 24, car.mesh.position.z);
+        // Map camera positioned at 18 units for 1.66x track geometry framing
+        cameras.top.position.set(car.mesh.position.x, 18, car.mesh.position.z);
         cameras.top.lookAt(car.mesh.position);
         controls.enabled = false;
     }
