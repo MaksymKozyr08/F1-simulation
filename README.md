@@ -1,64 +1,140 @@
-# F1 LINE RACER SIM - Developer Simulation Environment
+# Симулятор F1 з Автономною Оптимізацією Траєкторії (F1 Line Racer Sim)
 
-An advanced, interactive 3D Formula 1 line-following visualizer designed for autonomous vehicle control simulation. This environment integrates kinematic vehicle physics, a PID-controlled autopilot, real-time telemetry plotting, and a fully interactive Three.js 3D rendering engine.
-
----
-
-## Project Overview
-
-- **3D Visualizer**: Powered by **Three.js (v0.184.0)**, rendering procedural circuits with curved curbs, center guides, and elevation changes.
-- **Physics Engine**: Realistic vehicle dynamics utilizing a 6-DOF kinematic bicycle model (handling mass, yaw rate, wheel radius, load transfers, and traction control).
-- **Autonomous Autopilot**: A customizable **PID Feedback Loop** measuring lateral Cross-Track Error (CTE) ahead of the vehicle to govern automated steering.
-- **Interactive Console & Telemetry**: Full control panel to tune physics variables (mass, power, tire compounds, temp, gains) and view live SVG error graphs.
+Ласкаво просимо до детальної документації проекту **F1 Line Racer Simulator**! Цей проект є інтегрованою програмною системою для симуляції динаміки боліда Формули-1 у реальному часі за допомогою 3D-візуалізатора на базі Three.js, інтеграції диференціального фізичного рушія та автоматизованого ШІ-оптимізатора гоночних ліній із збереженням телеметрії у базу даних PostgreSQL.
 
 ---
 
-## Prerequisites & Installation (Windows)
+## 1. Архітектура Проекту
 
-Ensure you have **Node.js** (v18 or higher) installed on your system.
+Проект побудований на базі **двопроцесорної архітектури (dual-process architecture)**:
+1. **Frontend (Клієнтська частина)**: Додаток на React/TypeScript з використанням збірника **Vite**. Він відповідає за рендеринг траси та тривимірного боліда (Three.js WebGL), інтерактивні графіки тиску в шинах та розподілу навантаження на осі, а також за збір користувацьких інпутів та ручне керування.
+2. **Backend (Серверна частина)**: Standalone API-сервер на базі **Node.js** та **TypeScript** (запуск за допомогою `ts-node` або `node --experimental-strip-types`), що взаємодіє з базою даних **PostgreSQL** за допомогою пулу підключень `pg.Pool`. Сервер надає точки доступу (endpoints) для збереження сирої телеметрії та проведення обчислень оптимізованого шляху.
 
-1. Open your terminal of choice (PowerShell, Command Prompt, or Git Bash).
-2. Navigate to the project's source directory:
-   ```powershell
-   cd "c:\Users\maksym.kozyr\Desktop\Git workspace\F1-simulation\my-racing-project"
-   ```
-3. Install the dependencies:
-   ```powershell
-   npm install
-   ```
+---
 
-### 💡 PowerShell Execution Policy Bypass
-If your system blocks the script execution with an execution policy warning (e.g., `npm.ps1 cannot be loaded because running scripts is disabled`), run the Command Prompt batch script instead to bypass the policy:
-```powershell
-npm.cmd install
+## 2. Фізичні та Математичні Алгоритми Оптимізації
+
+Проект містить повноцінний ШІ-рушій оптимізації, який складається з двох основних етапів:
+
+### А. Оптимізація Траєкторії: Метод Еластичної Лінії (Cubic Spline / Elastic Line Relaxation)
+Алгоритм приймає масив координат центральної лінії траси $(x, z)$ і намагається знайти траєкторію з мінімальною інтегральною кривизною (найкоротший і найплавніший шлях, що зрізає апекси поворотів):
+* Обчислюються вектори нормалей для кожної точки траси в площині X-Z.
+* Вводиться вектор зміщень $\alpha_i$ уздовж нормалі для кожної точки $i$.
+* Функція втрат оптимізує кривизну лінії (за допомогою наближення других різниць $d_i = p_{i+1} - 2p_i + p_{i-1}$) та додає регуляризаційний параметр $\lambda$, який утримує траєкторію в межах ширини дорожнього полотна.
+* Рішення шукається ітераційним методом градієнтного спуску (Gradient Descent Solver) з обмеженням максимального зміщення:
+  $$-\text{maxShift} \le \alpha_i \le \text{maxShift}$$
+
+### Б. Профілювання Швидкості: Двопрохідний Фізичний Свіп (Forward/Backward Sweep)
+Після знаходження траєкторії для кожної її координати вираховується профіль цільових швидкостей:
+1. **Кривизна та Зчеплення**: Обчислюється локальний радіус кривизни $R$ за формулою кривизни через площу трикутника на трьох сусідніх точках траекторії. Максимально допустима швидкість у повороті обмежується відцентровою силою та зчепленням коліс з трасою за формулою:
+   $$v_{max} = \sqrt{\mu \cdot g \cdot R}$$
+   де $\mu$ — коефіцієнт тертя шин (регулюється слайдером), $g = 9.81$ м/с², $R$ — радіус кривизни ($R = 1/\text{curvature}$).
+2. **Зворотний прохід (Backward Pass - Гальмування)**: Рухаючись від кінця траєкторії до початку, алгоритм вираховує оптимальні точки початку гальмування перед входом у поворот відповідно до ліміту уповільнення боліда ($a_{decel} = 22.0$ м/с²):
+   $$v_i = \min\left(v_i, \sqrt{v_{i+1}^2 + 2 \cdot a_{decel} \cdot d}\right)$$
+3. **Прямий прохід (Forward Pass - Розгін)**: Рухаючись від початку до кінця, алгоритм обмежує динаміку прискорення боліда на виходах з поворотів та прямих ділянках на основі максимального крутного моменту двигуна ($a_{accel} = 8.5$ м/с²):
+   $$v_{i+1} = \min\left(v_{i+1}, \sqrt{v_i^2 + 2 \cdot a_{accel} \cdot d}\right)$$
+
+Коли активується **AI Optimizer**, ці розраховані значення швидкості передаються безпосередньо у фізичний рушій боліда, повністю ігноруючи ручні налаштування слайдерів.
+
+---
+
+## 3. Налаштування Бази Даних PostgreSQL
+
+Сервер використовує пули з'єднань для збереження даних у PostgreSQL. Перед запуском переконайтеся, що у вашому pgAdmin створено базу даних з назвою `f1_simulation`.
+
+Відкрийте **Query Tool** у pgAdmin для бази `f1_simulation` і виконайте наступний SQL-скрипт для створення необхідних таблиць:
+
+```sql
+-- Таблиця для збереження вихідних (центральних) точок траси
+CREATE TABLE IF NOT EXISTS raw_track_data (
+    id SERIAL PRIMARY KEY,
+    track_id VARCHAR(50) NOT NULL,
+    lap_number INT NOT NULL,
+    point_index INT NOT NULL,
+    x DOUBLE PRECISION NOT NULL,
+    y DOUBLE PRECISION NOT NULL,
+    z DOUBLE PRECISION NOT NULL,
+    heading DOUBLE PRECISION NOT NULL,
+    curvature DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (track_id, lap_number, point_index)
+);
+
+-- Таблиця для збереження оптимізованих гоночних траєкторій та профілів швидкості
+CREATE TABLE IF NOT EXISTS optimized_race_profiles (
+    id SERIAL PRIMARY KEY,
+    track_id VARCHAR(50) NOT NULL,
+    point_index INT NOT NULL,
+    x DOUBLE PRECISION NOT NULL,
+    y DOUBLE PRECISION NOT NULL,
+    z DOUBLE PRECISION NOT NULL,
+    target_speed DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (track_id, point_index)
+);
 ```
 
----
-
-## How to Launch
-
-1. Boot up the Vite local development server:
-   ```powershell
-   npm run dev
-   # If ps1 is blocked:
-   npm.cmd run dev
-   ```
-2. Once the compiler finishes, browse to the visualizer at:
-   👉 **[http://localhost:3000/](http://localhost:3000/)**
+### Параметри підключення за замовчуванням:
+* **Host**: `localhost`
+* **Port**: `5432`
+* **User**: `postgres`
+* **Password**: `postgres` (або ваш пароль від PostgreSQL)
+* **Database**: `f1_simulation`
 
 ---
 
-## Technical Upgrades & Custom Features
+## 4. Покрокова Інструкція із Запуску
 
-### 1. Single-Viewport Full-Screen Canvas
-The previous 3-viewport split-screen rendering layout (Front, Top, Inside) has been replaced by a single, immersive 3D viewport. The active camera occupies 100% of the display canvas space for cleaner visualization.
+Система розгортається у два паралельні термінали.
 
-### 2. HUD Camera Switching
-You can cycle between cameras directly from the UI header using the **CYCLE CAMERA** button next to the Autopilot/Manual status pill.
-- **Orbit Camera (`orbit`)**: A free-moving chase camera with fully active OrbitControls (drag to rotate, scroll to zoom, right-click to pan).
-- **Cockpit Follow Camera (`cockpit`)**: A chase camera locked behind the F1 car, smoothly tracking its heading, roll, and elevation changes.
-- **Top-Down Map Camera (`map`)**: A fixed orthographic-like camera looking straight down at the center coordinates to showcase the entire circuit layout.
+### Крок 1: Встановлення Залежностей
+Відкрийте термінал у корені проекту та перейдіть у директорію клієнтської частини для встановлення пакетів:
+```bash
+cd my-racing-project
+npm install
+```
 
-### 3. ESM Lifecycle Timing Fixes
-- **Race Condition Fix**: The initialization lifecycle in `app.js` checks `document.readyState` directly. If the DOM has already loaded (standard in ESM/Vite async loads), the application initializes immediately instead of deadlocking on a missed `DOMContentLoaded` event.
-- **Physics Wrapper Preservation**: Added guard conditions to prevent subsequent ESM module re-execution from overwriting custom global classes (like `window.RWIDVehiclePhysics`) wrapped by orchestrators.
+### Крок 2: Запуск Сервера Бази Даних та API
+Відкрийте **друге вікно терміналу** в корені проекту та запустіть Node.js сервер за допомогою однієї з команд:
+```bash
+# Варіант 1: Через ts-node
+npx ts-node backend/server.ts
+
+# Варіант 2: За допомогою нативної підтримки TypeScript в сучасних версіях Node.js
+node --experimental-strip-types backend/server.ts
+```
+При успішному підключенні до бази даних ви побачите повідомлення:
+`[DATABASE] PostgreSQL Pool established and verified successfully.`
+`[SERVER] Running on http://localhost:3001`
+
+*(У разі виникнення критичної помилки з'єднання з базою, сервер миттєво завершить роботу з виведенням повідомлення `CRITICAL DATABASE ERROR`).*
+
+### Крок 3: Запуск Інтерфейсу
+У першому вікні терміналу (папка `my-racing-project`) запустіть локальний сервер Vite:
+```bash
+npm run dev
+```
+Перейдіть у браузері за посиланням `http://localhost:5173`.
+
+---
+
+## 5. Сценарій Демонстрації для Презентації
+
+Під час показу проекту професору рекомендується наступний сценарій:
+
+1. **Режим Візуалізатора (Visualizer Mode)**:
+   * Перейдіть на вкладку **Visualizer** у верхньому меню.
+   * Ви побачите повноцінне тривимірне вікно симуляції (3D Viewport) на весь екран.
+   * Ліва бічна панель активна: керуйте параметрами швидкості та кутом повороту керма за допомогою повзунків (Target Speed, Steering Angle), або перейдіть на ручне керування клавішами **WASD / Стрілочки**.
+   * Болід рухається строго за геометричною центральною лінією траси (`baselineCurve`).
+
+2. **Запуск ШІ-Оптимізації (AI Optimizer Mode)**:
+   * Перейдіть на вкладку **AI Optimizer** у верхньому меню.
+   * Зверніть увагу, що бічна панель керування автоматично приховує слайдери (`display: none`), блокуючи можливість ручного втручання.
+   * Натисніть червону кнопку **"RUN OPTIMIZATION"** у правому верхньому куті.
+   * Подивіться в консоль розробника у браузері (F12): ви побачите лог `Sending payload to backend...` та вихідні JSON-дані.
+   * Сервер обробить запит, перезапише таблиці в PostgreSQL і надішле відповідь клієнту. В консолі браузера з'явиться підтвердження:
+     `SUCCESS: Track profiles written to PostgreSQL:`
+     `SUCCESS: Optimization data saved to PostgreSQL!`
+   * Болід миттєво перемкнеться на оптимізовану траєкторію (`optimizedCurve`), зрізаючи кути, проходячи апекси та автоматично прискорюючись/уповільнюючись відповідно до згенерованого графіка швидкостей.
+   * Відкрийте pgAdmin і переконайтеся в появі нових рядків у таблицях `raw_track_data` та `optimized_race_profiles`.

@@ -35,6 +35,13 @@ let activePhysicsInstance: any = null;
         super(...args);
         activePhysicsInstance = this;
     }
+    update(controlsInput: any, dt: number) {
+        if (isOptimizerMode && optimizedSpeeds && optimizedSpeeds.length > 0) {
+            const idx = Math.max(0, Math.min(optimizedSpeeds.length - 1, Math.floor(progressT * (optimizedSpeeds.length - 1))));
+            controlsInput.targetSpeed = optimizedSpeeds[idx];
+        }
+        return super.update(controlsInput, dt);
+    }
 };
 
 // 2. Dynamically import app.js and render.ts to ensure they execute after physics is globally available
@@ -50,8 +57,59 @@ let baselineCurve: THREE.CatmullRomCurve3 | null = null;
 let optimizedCurve: THREE.CatmullRomCurve3 | null = null;
 
 // AI Optimizer Mode state
+let simState: any = null;
 let isOptimizerMode = false;
 let optimizedSpeeds: number[] | null = null;
+
+interface PointTelemetry {
+    pointIndex: number;
+    x: number;
+    z: number;
+    actualSpeed: number;
+    lateralG: number;
+    tireSlip: number;
+    lapNumber: number;
+}
+
+let lapTelemetry: PointTelemetry[] = [];
+let isCalibrating = false;
+
+const state = {
+    get lapTelemetry() { return lapTelemetry; },
+    set lapTelemetry(val) { lapTelemetry = val; },
+    get isProcessingLap() { return isCalibrating; },
+    set isProcessingLap(val) { isCalibrating = val; },
+    get optimizedCurve() {
+        if (!optimizedCurve) return { length: 0 } as any;
+        (optimizedCurve as any).length = optimizedCurve.points.length;
+        return optimizedCurve;
+    },
+    set optimizedCurve(val) { optimizedCurve = val; },
+    get optimizedSpeeds() { return optimizedSpeeds; },
+    set optimizedSpeeds(val) { optimizedSpeeds = val; },
+    get currentLapNumber() { return lapNumber; },
+    set currentLapNumber(val) { lapNumber = val; },
+    isFlipped: false,
+    currentPointIndex: 0,
+    hasTraversed: false,
+    hasTriggeredLapEnd: false,
+    carVelocity: 0
+};
+
+function initLapTelemetry(N: number) {
+    lapTelemetry = [];
+    for (let i = 0; i < N; i++) {
+        lapTelemetry.push({
+            pointIndex: i,
+            x: 0,
+            z: 0,
+            actualSpeed: 0,
+            lateralG: 0,
+            tireSlip: 0,
+            lapNumber: lapNumber
+        });
+    }
+}
 
 // Tyre pressure and temperature simulation states
 const wheelTemps = { fl: 35, fr: 35, rl: 35, rr: 35 };
@@ -390,11 +448,30 @@ async function init() {
             isOptimizerMode = false;
             setSidebarManualControlsLocked(false);
             
-            // Set the car to follow the standard centerline path (baselineCurve)
+            lapTelemetry = [];
+            
             if (baselineCurve) {
                 activeCurve = baselineCurve;
                 setRenderCurve(baselineCurve);
             }
+            
+            if (activePhysicsInstance) {
+                activePhysicsInstance.reset();
+            }
+            distance = 0;
+            cte = 0;
+            cteIntegral = 0;
+            prevCte = 0;
+            progressT = 0;
+            shouldAlignHeading = true;
+            lapNumber = 1;
+            lapTime = 0;
+            maxSpeedInLap = 0;
+            cteSumInLap = 0;
+            cteCountInLap = 0;
+            prevTForLap = 0;
+            state.currentPointIndex = 0;
+            state.hasTraversed = false;
         });
 
         navOptimizer.addEventListener('click', (e) => {
@@ -406,13 +483,81 @@ async function init() {
             isOptimizerMode = true;
             setSidebarManualControlsLocked(true);
             
-            // Set the car to follow the optimized racing line (optimizedCurve)
-            if (optimizedCurve) {
+            if (activePhysicsInstance) {
+                activePhysicsInstance.reset();
+            }
+            distance = 0;
+            cte = 0;
+            cteIntegral = 0;
+            prevCte = 0;
+            progressT = 0;
+            shouldAlignHeading = true;
+            lapNumber = 1;
+            lapTime = 0;
+            maxSpeedInLap = 0;
+            cteSumInLap = 0;
+            cteCountInLap = 0;
+            prevTForLap = 0;
+            state.currentPointIndex = 0;
+            state.hasTraversed = false;
+ 
+            const currentTrack = getActiveTrackFromDOM();
+            const centerline = generateTrackPoints(currentTrack);
+            const payload = {
+                trackId: currentTrack,
+                lap_number: 1,
+                car_coordinates: centerline.map(p => ({ x: p.x, z: p.z })),
+                velocity_profile: centerline.map(() => 0),
+                timestamp: new Date().toISOString()
+            };
+
+            fetch('http://localhost:3001/api/optimize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data && data.success && data.points) {
+                    const optProfile: OptimizedPoint[] = data.points;
+                    const optPoints = optProfile.map(p => new THREE.Vector3(p.x, p.y, p.z));
+                    const speedProfile = optProfile.map(p => p.targetSpeed);
+
+                    const newTrack = createTrack(optPoints);
+                    optimizedCurve = newTrack.curve;
+                    activeCurve = optimizedCurve;
+                    setRenderCurve(optimizedCurve);
+
+                    for (const child of scene.children) {
+                        if (child instanceof THREE.Group && child !== activeCarInstance?.mesh) {
+                            const hasLines = child.children.some(c => c instanceof THREE.Line);
+                            if (hasLines) {
+                                scene.remove(child);
+                                break;
+                            }
+                        }
+                    }
+                    scene.add(newTrack.trackGroup);
+
+                    optimizedSpeeds = speedProfile;
+                    initLapTelemetry(optimizedSpeeds.length);
+                    console.log("[TAB SWITCH] Reloaded latest profile from backend.");
+                }
+            })
+            .catch(err => {
+                console.error("[TAB SWITCH] Failed to reload profile from backend:", err);
+                const optPointsLocal = optimizeTrajectory(centerline, 1.0, 0.20, 600, 0.02);
+                const frictionSlider = document.getElementById('slider-friction') as HTMLInputElement;
+                const tireFriction = frictionSlider ? parseFloat(frictionSlider.value) : 0.80;
+                optimizedSpeeds = generateSpeedProfile(optPointsLocal, tireFriction, 320, 8.5, 22.0);
+                
+                const newTrack = createTrack(optPointsLocal);
+                optimizedCurve = newTrack.curve;
                 activeCurve = optimizedCurve;
                 setRenderCurve(optimizedCurve);
-            }
+                initLapTelemetry(optimizedSpeeds.length);
+            });
             
-            // Redraw chart when entering optimizer tab
             setTimeout(drawTyrePressureChart, 50);
         });
     }
@@ -449,6 +594,7 @@ async function init() {
                             timestamp: new Date().toISOString()
                         };
                         console.log("[DISPATCH] Dispatching telemetry payload to backend:", payload);
+                        console.log("Sending payload to backend...");
 
                         // 1. Send exploratory centerline lap telemetry to database
                         const telResponse = await fetch('http://localhost:3001/api/telemetry', {
@@ -474,6 +620,7 @@ async function init() {
                         
                         if (data && data.success && data.points) {
                             console.log("SUCCESS: Track profiles written to PostgreSQL:", data);
+                            console.log("SUCCESS: Optimization data saved to PostgreSQL!", data);
                             const optProfile: OptimizedPoint[] = data.points;
                             optPoints = optProfile.map(p => new THREE.Vector3(p.x, p.y, p.z));
                             speedProfile = optProfile.map(p => p.targetSpeed);
@@ -536,10 +683,143 @@ async function init() {
     animate(lastTime);
     console.log("F1 Connection & Orchestration Layer Initialized.");
 }
+// Trigger calibration API and process optimization feedback
+function triggerCalibration(wasCrash?: boolean) {
+    if (wasCrash) {
+        console.log("[CALIBRATION] Crash recovery initiated.");
+    }
+    state.isProcessingLap = true;
+
+    const overlay = document.getElementById('calibration-overlay');
+    const overlayMsg = document.getElementById('calibration-overlay-message');
+    if (overlay && overlayMsg) {
+        overlayMsg.textContent = "Calibrating Lap " + state.currentLapNumber + "... Optimizing Weights";
+        overlay.classList.remove('calibration-hidden');
+    }
+
+    state.carVelocity = 0;
+    if (activePhysicsInstance && activePhysicsInstance.state) {
+        activePhysicsInstance.state.vx = 0;
+    }
+
+    const currentTrack = getActiveTrackFromDOM();
+    const payload = {
+        trackId: currentTrack,
+        lap_number: state.currentLapNumber,
+        lapNumber: state.currentLapNumber,
+        telemetry: state.lapTelemetry,
+        lapTime: lapTime,
+        wasCrash: !!wasCrash
+    };
+
+    setTimeout(() => {
+        fetch('http://localhost:3001/api/calibrate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+            return res.json();
+        })
+        .then(data => {
+            if (data && data.success && data.points) {
+                const optProfile: OptimizedPoint[] = data.points;
+                const optPoints = optProfile.map(p => new THREE.Vector3(p.x, p.y, p.z));
+                const speedProfile = optProfile.map(p => p.targetSpeed);
+
+                const newTrack = createTrack(optPoints);
+                state.optimizedCurve = newTrack.curve;
+                activeCurve = state.optimizedCurve;
+                setRenderCurve(state.optimizedCurve);
+
+                for (const child of scene.children) {
+                    if (child instanceof THREE.Group && child !== activeCarInstance?.mesh) {
+                        const hasLines = child.children.some(c => c instanceof THREE.Line);
+                        if (hasLines) {
+                            scene.remove(child);
+                            break;
+                        }
+                    }
+                }
+                scene.add(newTrack.trackGroup);
+
+                state.optimizedSpeeds = speedProfile;
+                state.isFlipped = false;
+                if (simState) {
+                    simState.isFlipped = false;
+                }
+                state.carVelocity = 0;
+                if (activePhysicsInstance && activePhysicsInstance.state) {
+                    activePhysicsInstance.state.vx = 0;
+                }
+                state.currentPointIndex = 0;
+                if (activeCarInstance && activeCarInstance.mesh) {
+                    activeCarInstance.mesh.rotation.set(0, 0, 0);
+                    activeCarInstance.mesh.quaternion.set(0, 0, 0, 1);
+                }
+                console.log(`[CALIBRATION COMPLETE] Lap ${state.currentLapNumber} completed. Calibrated profile loaded.`);
+            }
+
+            if (activePhysicsInstance) {
+                activePhysicsInstance.reset();
+            }
+            distance = 0;
+            cte = 0;
+            cteIntegral = 0;
+            prevCte = 0;
+            progressT = 0;
+            shouldAlignHeading = true;
+            prevTForLap = 0;
+            state.currentPointIndex = 0;
+            state.hasTraversed = false;
+
+            const avgCte = cteCountInLap > 0 ? (cteSumInLap / cteCountInLap) : 0;
+            recordCompletedLap(state.currentLapNumber, lapTime, maxSpeedInLap, avgCte);
+
+            state.currentLapNumber = data.nextLap !== undefined ? data.nextLap : (state.currentLapNumber + 1);
+            lapTime = 0;
+            maxSpeedInLap = 0;
+            cteSumInLap = 0;
+            cteCountInLap = 0;
+
+            const nextN = state.optimizedSpeeds ? state.optimizedSpeeds.length : generateTrackPoints(getActiveTrackFromDOM()).length;
+            initLapTelemetry(nextN);
+
+            if (overlay) {
+                overlay.classList.add('calibration-hidden');
+            }
+            state.isProcessingLap = false;
+        })
+        .catch(err => {
+            console.error('[CALIBRATION FAILED] Error:', err);
+            if (activePhysicsInstance) {
+                activePhysicsInstance.reset();
+            }
+            distance = 0;
+            cte = 0;
+            cteIntegral = 0;
+            prevCte = 0;
+            progressT = 0;
+            shouldAlignHeading = true;
+            prevTForLap = 0;
+            state.currentPointIndex = 0;
+            state.hasTraversed = false;
+            if (overlay) {
+                overlay.classList.add('calibration-hidden');
+            }
+            state.isProcessingLap = false;
+        });
+    }, 1000);
+}
 
 // Loop execution frame
 function animate(currentTime: number) {
     requestAnimationFrame(animate);
+    if (state.isProcessingLap) {
+        lastTime = currentTime;
+        return;
+    }
     let dt = (currentTime - lastTime) / 1000.0;
     lastTime = currentTime;
     
@@ -606,13 +886,16 @@ function animate(currentTime: number) {
     }
 
     // Execute physics module integration
-    const state = simulation(dt);
+    simState = simulation(dt);
+    if (simState) {
+        state.isFlipped = simState.isFlipped;
+    }
 
     // Align heading with track tangent on first frame, track switch, or reset
-    if (shouldAlignHeading && state && activeCurve) {
+    if (shouldAlignHeading && simState && activeCurve) {
         const initialTangent = activeCurve.getTangentAt(0);
-        state.heading = Math.atan2(initialTangent.x, initialTangent.z);
-        console.log(`[ALIGN HEADING] Aligned vehicle heading to track tangent: ${state.heading.toFixed(4)} rad`);
+        simState.heading = Math.atan2(initialTangent.x, initialTangent.z);
+        console.log(`[ALIGN HEADING] Aligned vehicle heading to track tangent: ${simState.heading.toFixed(4)} rad`);
         shouldAlignHeading = false;
     }
 
@@ -622,25 +905,25 @@ function animate(currentTime: number) {
     }
     if ((window as any).debugFrameCount < 20) {
         (window as any).debugFrameCount++;
-        if (state && activeCurve) {
+        if (simState && activeCurve) {
             const tangent = activeCurve.getTangentAt(progressT);
             const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
-            const carDir = new THREE.Vector3(Math.sin(state.heading), 0, Math.cos(state.heading));
+            const carDir = new THREE.Vector3(Math.sin(simState.heading), 0, Math.cos(simState.heading));
             const trackHeading = Math.atan2(tangent.x, tangent.z);
-            console.log(`[FRAME ${(window as any).debugFrameCount}] progressT: ${progressT.toFixed(4)}, vx: ${state.vx.toFixed(4)}, heading: ${state.heading.toFixed(4)}, trackHeading: ${trackHeading.toFixed(4)}, carDir: (${carDir.x.toFixed(4)}, ${carDir.z.toFixed(4)}), tangent: (${tangent.x.toFixed(4)}, ${tangent.z.toFixed(4)}), normal: (${normal.x.toFixed(4)}, ${normal.z.toFixed(4)}), dot_tangent: ${carDir.dot(tangent).toFixed(4)}, dot_normal: ${carDir.dot(normal).toFixed(4)}, cte: ${cte.toFixed(4)}`);
+            console.log(`[FRAME ${(window as any).debugFrameCount}] progressT: ${progressT.toFixed(4)}, vx: ${simState.vx.toFixed(4)}, heading: ${simState.heading.toFixed(4)}, trackHeading: ${trackHeading.toFixed(4)}, carDir: (${carDir.x.toFixed(4)}, ${carDir.z.toFixed(4)}), tangent: (${tangent.x.toFixed(4)}, ${tangent.z.toFixed(4)}), normal: (${normal.x.toFixed(4)}, ${normal.z.toFixed(4)}), dot_tangent: ${carDir.dot(tangent).toFixed(4)}, dot_normal: ${carDir.dot(normal).toFixed(4)}, cte: ${cte.toFixed(4)}`);
         }
     }
 
-    if (state && activeCurve && activeCarInstance) {
+    if (simState && activeCurve && activeCarInstance) {
         const curveLength = activeCurve.getLength();
         
         // Signed CTE calculations & longitudinal progression
         const tangent = activeCurve.getTangentAt(progressT);
         const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
-        const carDir = new THREE.Vector3(Math.sin(state.heading), 0, Math.cos(state.heading));
+        const carDir = new THREE.Vector3(Math.sin(simState.heading), 0, Math.cos(simState.heading));
         
-        const v_long = state.vx * carDir.dot(tangent);
-        const v_lat = state.vx * carDir.dot(normal);
+        const v_long = simState.vx * carDir.dot(tangent);
+        const v_lat = simState.vx * carDir.dot(normal);
         
         distance += v_long * dt;
         cte += v_lat * dt;
@@ -687,7 +970,7 @@ function animate(currentTime: number) {
             const targetVec = pos_lookahead.clone().sub(physicalPos).normalize();
             const targetAngle = Math.atan2(targetVec.x, targetVec.z);
             
-            let angleError = targetAngle - state.heading;
+            let angleError = targetAngle - simState.heading;
             while (angleError > Math.PI) angleError -= 2 * Math.PI;
             while (angleError < -Math.PI) angleError += 2 * Math.PI;
             
@@ -732,7 +1015,7 @@ function animate(currentTime: number) {
         
         if (isOptimizerMode) {
             // Update the dedicated UI static telemetry optimizer dashboard
-            updateOptimizerDashboard(state, dt);
+            updateOptimizerDashboard(simState, dt);
         }
         
         // Override car position and orientation using physical state vector
@@ -742,9 +1025,9 @@ function animate(currentTime: number) {
         // Tilting along track slope pitch (3D)
         const cos_pitch = Math.sqrt(1 - closestTangent.y * closestTangent.y);
         const carHeading3D = new THREE.Vector3(
-            Math.sin(state.heading) * cos_pitch,
+            Math.sin(simState.heading) * cos_pitch,
             closestTangent.y,
-            Math.cos(state.heading) * cos_pitch
+            Math.cos(simState.heading) * cos_pitch
         );
         activeCarInstance.mesh.lookAt(finalPosition.clone().add(carHeading3D));
         
@@ -755,14 +1038,73 @@ function animate(currentTime: number) {
         
         // Lap timing and metrics tracking
         lapTime += dt;
-        if (state.vx * 3.6 > maxSpeedInLap) {
-            maxSpeedInLap = state.vx * 3.6;
+        if (simState.vx * 3.6 > maxSpeedInLap) {
+            maxSpeedInLap = simState.vx * 3.6;
         }
         cteSumInLap += Math.abs(cte);
         cteCountInLap++;
         
-        // Detect lap wrap-around
-        if (prevTForLap > 0.85 && progressT < 0.15) {
+        if (isOptimizerMode) {
+            const N_points = state.optimizedSpeeds ? state.optimizedSpeeds.length : generateTrackPoints(getActiveTrackFromDOM()).length;
+            if (state.lapTelemetry.length !== N_points) {
+                initLapTelemetry(N_points);
+            }
+
+            let closestIdx = 0;
+            let minDSq = Infinity;
+            if (activeCurve && activeCarInstance) {
+                const pts = activeCurve.getPoints(N_points - 1);
+                for (let i = 0; i < pts.length; i++) {
+                    const dSq = pts[i].distanceToSquared(activeCarInstance.mesh.position);
+                    if (dSq < minDSq) {
+                        minDSq = dSq;
+                        closestIdx = i;
+                    }
+                }
+            }
+            const idx = closestIdx;
+            const prevPointIndex = state.currentPointIndex;
+            state.currentPointIndex = idx;
+
+            const pt = activeCurve ? activeCurve.getPointAt(idx / (N_points - 1)) : new THREE.Vector3();
+            state.lapTelemetry[idx].x = pt.x;
+            state.lapTelemetry[idx].z = pt.z;
+            if (state.isFlipped) {
+                state.lapTelemetry[idx].actualSpeed = 0;
+                state.lapTelemetry[idx].lateralG = 5.0;
+                state.lapTelemetry[idx].tireSlip = 1.0;
+            } else {
+                state.lapTelemetry[idx].actualSpeed = Math.max(state.lapTelemetry[idx].actualSpeed, simState.vx);
+                const steeringAngle = activePhysicsInstance?.state?.steeringAngle || 0.0;
+                const turnRadius = 2.662 / Math.max(0.0001, Math.abs(steeringAngle));
+                const ay = (simState.vx * simState.vx) / turnRadius;
+                const currentLateralG = ay / 9.81;
+                state.lapTelemetry[idx].lateralG = Math.max(state.lapTelemetry[idx].lateralG, currentLateralG);
+                const currentSlip = Math.max(Math.abs(simState.sLeft || 0), Math.abs(simState.sRight || 0));
+                state.lapTelemetry[idx].tireSlip = Math.max(state.lapTelemetry[idx].tireSlip, currentSlip);
+            }
+            state.lapTelemetry[idx].lapNumber = lapNumber;
+
+            if (state.currentPointIndex > N_points * 0.3 && state.currentPointIndex < N_points * 0.7) {
+                state.hasTraversed = true;
+            }
+
+            const isFinishLine = idx === 0 && prevPointIndex === state.optimizedCurve.length - 1 && state.hasTraversed;
+            if ((isFinishLine || state.isFlipped) && !state.isProcessingLap) {
+                state.isProcessingLap = true; // Set lock first
+                const wasCrash = state.isFlipped;
+                state.isFlipped = false; // IMMEDIATELY clear the flag to prevent double execution
+                if (simState) simState.isFlipped = false;
+                triggerCalibration(wasCrash);
+            }
+            // Reset the finish line lock once the car leaves the starting zone
+            if (idx > 2) {
+                state.hasTriggeredLapEnd = false;
+            }
+        }
+
+        // Detect lap wrap-around or rollover crash
+        if (!isOptimizerMode && (prevTForLap > 0.85 && progressT < 0.15)) {
             const avgCte = cteCountInLap > 0 ? (cteSumInLap / cteCountInLap) : 0;
             recordCompletedLap(lapNumber, lapTime, maxSpeedInLap, avgCte);
             

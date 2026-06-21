@@ -24,6 +24,16 @@ export interface OptimizedPoint {
     targetSpeed: number;
 }
 
+export interface VehicleTelemetry {
+    pointIndex: number;
+    x: number;
+    z: number;
+    actualSpeed: number;
+    lateralG: number;
+    tireSlip: number;
+    lapNumber: number;
+}
+
 export interface TrackPoint {
     x: number;
     y: number;
@@ -46,6 +56,13 @@ function dist(p1: { x: number; y: number; z: number }, p2: { x: number; y: numbe
 export class TrajectoryOptimizer {
     private pgPool: any = null;
     private useDB: boolean = false;
+    private lastSuccessfulSpeeds: Map<string, Float64Array> = new Map();
+    private lastSuccessfulAlpha: Map<string, Float32Array> = new Map();
+    private bestLapTimes: Map<string, number> = new Map();
+    private currentSpeedKMH: Map<string, number> = new Map();
+    private lastSuccessfulSpeedKMH: Map<string, number> = new Map();
+    private candidateSpeeds: Map<string, Float64Array> = new Map();
+    private candidateAlpha: Map<string, Float32Array> = new Map();
 
     constructor(config?: DatabaseConfig) {
         this.initializeDB(config);
@@ -56,21 +73,31 @@ export class TrajectoryOptimizer {
             // @ts-ignore
             const { default: pkg } = await import('pg');
             const Pool = pkg.Pool;
-            
+
+            // Якщо config передано, використовуємо його поля, інакше — чіткі дефолтні параметри
             this.pgPool = new Pool({
-                connectionString: config?.connectionString || 'postgresql://postgres:postgres@localhost:5432/f1_simulation',
-                host: config?.host,
-                port: config?.port,
-                user: config?.user,
-                password: config?.password,
-                database: config?.database,
+                host: config?.host || 'localhost',
+                port: config?.port || 5432,
+                user: config?.user || 'postgres',
+                password: config?.password || 'vfrcbvK1973',
+                database: config?.database || 'f1_simulation',
                 max: 5,
                 idleTimeoutMillis: 30000,
                 connectionTimeoutMillis: 2000,
             });
+
+            // Тестовий запит для миттєвої перевірки зв'язку з базою
+            await this.pgPool.query('SELECT NOW()');
+
             this.useDB = true;
-            console.log('[DATABASE] PostgreSQL Pool established.');
-            
+            console.log('[DATABASE] PostgreSQL Pool established and verified successfully.');
+
+            try {
+                await this.pgPool.query('SELECT lap_number FROM optimized_race_profiles LIMIT 1');
+            } catch (e) {
+                await this.pgPool.query('DROP TABLE IF EXISTS optimized_race_profiles');
+            }
+
             await this.pgPool.query(`
                 CREATE TABLE IF NOT EXISTS raw_track_data (
                     id SERIAL PRIMARY KEY,
@@ -89,25 +116,47 @@ export class TrajectoryOptimizer {
                 CREATE TABLE IF NOT EXISTS optimized_race_profiles (
                     id SERIAL PRIMARY KEY,
                     track_id VARCHAR(50) NOT NULL,
+                    lap_number INT NOT NULL,
                     point_index INT NOT NULL,
                     x DOUBLE PRECISION NOT NULL,
                     y DOUBLE PRECISION NOT NULL,
                     z DOUBLE PRECISION NOT NULL,
                     target_speed DOUBLE PRECISION NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (track_id, point_index)
+                    UNIQUE (track_id, lap_number, point_index)
                 );
             `);
         } catch (err) {
-            console.warn('[DATABASE] PostgreSQL init failed. Using RAM cache.', err);
+            console.error("CRITICAL DATABASE ERROR DURING INITIALIZATION:", err);
             this.useDB = false;
+            // @ts-ignore
+            process.exit(1);
+        }
+    }
+
+    public async resetTrackOptimizerState(trackId: string): Promise<void> {
+        this.lastSuccessfulSpeeds.delete(trackId);
+        this.lastSuccessfulAlpha.delete(trackId);
+        this.bestLapTimes.delete(trackId);
+        this.currentSpeedKMH.delete(trackId);
+        this.lastSuccessfulSpeedKMH.delete(trackId);
+        this.candidateSpeeds.delete(trackId);
+        this.candidateAlpha.delete(trackId);
+
+        if (this.useDB && this.pgPool) {
+            try {
+                await this.pgPool.query('DELETE FROM optimized_race_profiles WHERE track_id = $1', [trackId]);
+                console.log(`[DATABASE] Cleared optimized profiles for track ${trackId}`);
+            } catch (err) {
+                console.error(`[DATABASE ERROR] Failed to clear profiles for track ${trackId}:`, err);
+            }
         }
     }
 
     public async saveRawTrackData(trackId: string, lapNumber: number, points: TelemetryPoint[]): Promise<boolean> {
         if (!this.useDB || !this.pgPool) {
             const err = new Error("PostgreSQL database connection pool is not initialized.");
-            console.error("CRITICAL: PostgreSQL Insert Failed ->", err);
+            console.error("CRITICAL DATABASE ERROR:", err);
             throw err;
         }
         try {
@@ -131,7 +180,7 @@ export class TrajectoryOptimizer {
                 client.release();
             }
         } catch (err) {
-            console.error("CRITICAL: PostgreSQL Insert Failed ->", err);
+            console.error("CRITICAL DATABASE ERROR:", err);
             throw err;
         }
     }
@@ -154,22 +203,21 @@ export class TrajectoryOptimizer {
         }
     }
 
-    public async saveOptimizedProfile(trackId: string, points: OptimizedPoint[]): Promise<boolean> {
+    public async saveOptimizedProfile(trackId: string, points: OptimizedPoint[], lapNumber: number): Promise<boolean> {
         if (!this.useDB || !this.pgPool) {
-            const err = new Error("PostgreSQL database connection pool is not initialized.");
-            console.error("CRITICAL: PostgreSQL Insert Failed ->", err);
-            throw err;
+            RAM_OPTIMIZED_PROFILE_DB[`${trackId}_lap${lapNumber}`] = points;
+            return true;
         }
         try {
             const client = await this.pgPool.connect();
             try {
                 await client.query('BEGIN');
-                await client.query('DELETE FROM optimized_race_profiles WHERE track_id = $1', [trackId]);
+                await client.query('DELETE FROM optimized_race_profiles WHERE track_id = $1 AND lap_number = $2', [trackId, lapNumber]);
                 for (const p of points) {
                     await client.query(
-                        `INSERT INTO optimized_race_profiles (track_id, point_index, x, y, z, target_speed) 
-                         VALUES ($1, $2, $3, $4, $5, $6)`,
-                        [trackId, p.pointIndex, p.x, p.y, p.z, p.targetSpeed]
+                        `INSERT INTO optimized_race_profiles (track_id, lap_number, point_index, x, y, z, target_speed) 
+                         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                        [trackId, lapNumber, p.pointIndex, p.x, p.y, p.z, p.targetSpeed]
                     );
                 }
                 await client.query('COMMIT');
@@ -181,39 +229,71 @@ export class TrajectoryOptimizer {
                 client.release();
             }
         } catch (err) {
-            console.error("CRITICAL: PostgreSQL Insert Failed ->", err);
+            console.error("CRITICAL DATABASE ERROR:", err);
             throw err;
         }
     }
 
-    public async getOptimizedProfile(trackId: string): Promise<OptimizedPoint[]> {
+    public async getOptimizedProfile(trackId: string, lapNumber: number): Promise<OptimizedPoint[]> {
         if (!this.useDB || !this.pgPool) {
-            return RAM_OPTIMIZED_PROFILE_DB[trackId] || [];
+            return RAM_OPTIMIZED_PROFILE_DB[`${trackId}_lap${lapNumber}`] || [];
         }
         try {
             const res = await this.pgPool.query(
                 `SELECT point_index as "pointIndex", x, y, z, target_speed as "targetSpeed" 
                  FROM optimized_race_profiles 
-                 WHERE track_id = $1 
+                 WHERE track_id = $1 AND lap_number = $2 
                  ORDER BY point_index ASC`,
-                [trackId]
+                [trackId, lapNumber]
             );
             return res.rows;
         } catch (err) {
-            return RAM_OPTIMIZED_PROFILE_DB[trackId] || [];
+            return RAM_OPTIMIZED_PROFILE_DB[`${trackId}_lap${lapNumber}`] || [];
+        }
+    }
+
+    public async getLatestOptimizedProfile(trackId: string): Promise<OptimizedPoint[]> {
+        if (!this.useDB || !this.pgPool) {
+            let maxLap = -1;
+            let bestKey = '';
+            for (const key of Object.keys(RAM_OPTIMIZED_PROFILE_DB)) {
+                if (key.startsWith(`${trackId}_lap`)) {
+                    const lNum = parseInt(key.split('_lap')[1], 10);
+                    if (lNum > maxLap) {
+                        maxLap = lNum;
+                        bestKey = key;
+                    }
+                }
+            }
+            return bestKey ? RAM_OPTIMIZED_PROFILE_DB[bestKey] : [];
+        }
+        try {
+            const lapRes = await this.pgPool.query(
+                `SELECT COALESCE(MAX(lap_number), 0) as "maxLap" 
+                 FROM optimized_race_profiles 
+                 WHERE track_id = $1`,
+                [trackId]
+            );
+            const maxLap = lapRes.rows[0]?.maxLap || 0;
+            if (maxLap > 0) {
+                return this.getOptimizedProfile(trackId, maxLap);
+            }
+            return [];
+        } catch (err) {
+            return [];
         }
     }
 
     public optimizeTrajectory(
-        centerline: TrackPoint[], 
-        roadWidth: number = 1.0, 
-        carWidth: number = 0.25, 
+        centerline: TrackPoint[],
+        roadWidth: number = 1.0,
+        carWidth: number = 0.25,
         iterations: number = 600,
         learningRate: number = 0.02
     ): TrackPoint[] {
         const N = centerline.length;
         if (N < 4) return centerline.map(p => ({ ...p }));
-        const maxShift = roadWidth - (carWidth / 2.0); 
+        const maxShift = roadWidth - (carWidth / 2.0);
         const alpha = new Float32Array(N);
         const normals: { x: number; y: number; z: number }[] = [];
         for (let i = 0; i < N; i++) {
@@ -282,10 +362,10 @@ export class TrajectoryOptimizer {
     }
 
     public generateSpeedProfile(
-        path: TrackPoint[], 
-        mu: number = 0.8, 
+        path: TrackPoint[],
+        mu: number = 0.8,
         baseMaxSpeedKMH: number = 320,
-        a_accel: number = 8.5, 
+        a_accel: number = 8.5,
         a_decel: number = 22.0
     ): number[] {
         const N = path.length;
@@ -303,13 +383,15 @@ export class TrajectoryOptimizer {
             let curvature = 0.0001;
             if (d1 > 0 && d2 > 0 && d_tot > 0) {
                 const area = 0.5 * Math.abs(
-                    (curr.x - prev.x) * (next.z - curr.z) - 
+                    (curr.x - prev.x) * (next.z - curr.z) -
                     (curr.z - prev.z) * (next.x - curr.x)
                 );
                 curvature = (4.0 * area) / (d1 * d2 * d_tot);
             }
             const vLimit = Math.sqrt((mu * g) / Math.max(curvature, 0.0001));
-            rawLimits[i] = Math.min(vLimit, maxV);
+            const R = 1.0 / Math.max(curvature, 0.0001);
+            const vFlip = Math.sqrt((g * R * 1.0) / (2.0 * 0.3));
+            rawLimits[i] = Math.min(vLimit, vFlip, maxV);
         }
         velocities.set(rawLimits);
         for (let iter = 0; iter < 2; iter++) {
@@ -329,5 +411,262 @@ export class TrajectoryOptimizer {
             }
         }
         return Array.from(velocities);
+    }
+
+    public async calibrateProfile(
+        rawTrack: TrackPoint[],
+        telemetry: VehicleTelemetry[],
+        trackId: string,
+        lapNumber: number,
+        lapTime: number,
+        wasCrash: boolean
+    ): Promise<{ points: OptimizedPoint[]; nextLap: number }> {
+        const N = rawTrack.length;
+        if (N < 4) return { points: [], nextLap: lapNumber + 1 };
+
+        // 1. Calculate normals, tangents, curvatures, isTurn and direction of curvature vectors
+        const normals: { x: number; y: number; z: number }[] = [];
+        const isTurn = new Uint8Array(N);
+        const dx = new Float64Array(N);
+        const dz = new Float64Array(N);
+
+        for (let i = 0; i < N; i++) {
+            const prev = rawTrack[(i - 1 + N) % N];
+            const curr = rawTrack[i];
+            const next = rawTrack[(i + 1) % N];
+            const tx = next.x - prev.x;
+            const ty = next.y - prev.y;
+            const tz = next.z - prev.z;
+            const len = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
+            const tangent = { x: tx / len, y: ty / len, z: tz / len };
+            const nx = -tangent.z;
+            const ny = 0;
+            const nz = tangent.x;
+            const nLen = Math.sqrt(nx * nx + nz * nz) || 1;
+            normals.push({ x: nx / nLen, y: ny / nLen, z: nz / nLen });
+
+            // Curvature calculation
+            const d1 = dist(curr, prev);
+            const d2 = dist(next, curr);
+            const d_tot = dist(next, prev);
+            let curvature = 0.0001;
+            if (d1 > 0 && d2 > 0 && d_tot > 0) {
+                const area = 0.5 * Math.abs(
+                    (curr.x - prev.x) * (next.z - curr.z) -
+                    (curr.z - prev.z) * (next.x - curr.x)
+                );
+                curvature = (4.0 * area) / (d1 * d2 * d_tot);
+            }
+            isTurn[i] = curvature > 0.015 ? 1 : 0;
+            dx[i] = next.x - 2 * curr.x + prev.x;
+            dz[i] = next.z - 2 * curr.z + prev.z;
+        }
+
+        const maxShift = 0.35;
+        const targetSpeed = new Float64Array(N);
+        const alpha = new Float32Array(N);
+
+        // 2. Initialize or load state
+        if (lapNumber === 1 || !this.lastSuccessfulSpeeds.has(trackId)) {
+            const initSpeeds = new Float64Array(N).fill(30 / 3.6);
+            const initAlpha = new Float32Array(N).fill(0);
+            this.lastSuccessfulSpeeds.set(trackId, initSpeeds);
+            this.lastSuccessfulAlpha.set(trackId, initAlpha);
+            this.bestLapTimes.set(trackId, Infinity);
+            this.currentSpeedKMH.set(trackId, 30);
+            this.lastSuccessfulSpeedKMH.set(trackId, 30);
+            this.candidateSpeeds.set(trackId, initSpeeds);
+            this.candidateAlpha.set(trackId, initAlpha);
+
+            targetSpeed.set(initSpeeds);
+            alpha.set(initAlpha);
+            console.log(`[OPTIMIZER] Initialized track ${trackId} baseline speed to 30 km/h.`);
+        } else {
+            // Load the settings used in the lap that just finished
+            targetSpeed.set(this.candidateSpeeds.get(trackId)!);
+            alpha.set(this.candidateAlpha.get(trackId)!);
+        }
+
+        // 3. Evaluate results of the completed lap
+        const isCrashDetected = wasCrash || telemetry.some(t => t.tireSlip >= 1.0 || t.lateralG >= 5.0);
+        const currentKMH = this.currentSpeedKMH.get(trackId) ?? 30;
+        const bestTime = this.bestLapTimes.get(trackId) ?? Infinity;
+
+        console.log(`[OPTIMIZER] Evaluating Lap ${lapNumber} - Current Speed: ${currentKMH} km/h, Lap Time: ${lapTime.toFixed(3)}s, Best Lap Time: ${bestTime.toFixed(3)}s, Crash: ${isCrashDetected}`);
+
+        let success = false;
+        // Don't evaluate success for lap 1, just accept it as the initial baseline
+        if (lapNumber === 1) {
+            success = true;
+            this.bestLapTimes.set(trackId, lapTime > 0 ? lapTime : 9999);
+            this.lastSuccessfulSpeeds.set(trackId, new Float64Array(targetSpeed));
+            this.lastSuccessfulAlpha.set(trackId, new Float32Array(alpha));
+            this.lastSuccessfulSpeedKMH.set(trackId, currentKMH);
+            console.log(`[OPTIMIZER] First lap accepted. Baseline lap time set: ${(lapTime > 0 ? lapTime : 9999).toFixed(3)}s`);
+        } else if (!isCrashDetected && lapTime < bestTime) {
+            success = true;
+            this.bestLapTimes.set(trackId, lapTime);
+            this.lastSuccessfulSpeeds.set(trackId, new Float64Array(targetSpeed));
+            this.lastSuccessfulAlpha.set(trackId, new Float32Array(alpha));
+            this.lastSuccessfulSpeedKMH.set(trackId, currentKMH);
+            console.log(`[OPTIMIZER] Improvement! New best lap time: ${lapTime.toFixed(3)}s.`);
+        }
+
+        // 4. Backtracking and recursive state transitions
+        if (success && lapNumber > 1) {
+            // Success: Step speed up by +5 km/h
+            const nextKMH = currentKMH + 5;
+            this.currentSpeedKMH.set(trackId, nextKMH);
+            targetSpeed.fill(nextKMH / 3.6);
+
+            // Shift trajectory outward slightly in all turns to prepare for higher speed
+            for (let i = 0; i < N; i++) {
+                if (isTurn[i]) {
+                    const dot = dx[i] * normals[i].x + dz[i] * normals[i].z;
+                    if (dot > 0) {
+                        alpha[i] -= 0.015; // Shift outward by 0.015m
+                    } else {
+                        alpha[i] += 0.015; // Shift outward by 0.015m
+                    }
+                }
+            }
+            console.log(`[OPTIMIZER] Speed stepped up to ${nextKMH} km/h. Adjusted turn trajectory.`);
+        } else if (!success && lapNumber > 1) {
+            // Failure (crash or worse lap time): Roll back speed to previous success
+            const prevKMH = this.lastSuccessfulSpeedKMH.get(trackId) || 30;
+            this.currentSpeedKMH.set(trackId, prevKMH);
+
+            // Revert speeds and alphas to the last successful baseline
+            targetSpeed.set(this.lastSuccessfulSpeeds.get(trackId)!);
+            alpha.set(this.lastSuccessfulAlpha.get(trackId)!);
+
+            console.log(`[OPTIMIZER] Failure. Rolling back to speed: ${prevKMH} km/h.`);
+
+            // Shift trajectory outward around the problem area (crash or highest slip index)
+            let failIdx = -1;
+            let maxTireSlip = 0;
+            for (const t of telemetry) {
+                if (t.tireSlip > maxTireSlip) {
+                    maxTireSlip = t.tireSlip;
+                    failIdx = t.pointIndex;
+                }
+            }
+            if (failIdx === -1 || maxTireSlip < 0.5) {
+                let maxLat = 0;
+                for (const t of telemetry) {
+                    if (Math.abs(t.lateralG) > maxLat) {
+                        maxLat = Math.abs(t.lateralG);
+                        failIdx = t.pointIndex;
+                    }
+                }
+            }
+
+            if (failIdx !== -1) {
+                console.log(`[OPTIMIZER] Shifting trajectory outward by 0.03m around failure point (index ${failIdx}).`);
+                for (let offset = -3; offset <= 3; offset++) {
+                    const idx = (failIdx + offset + N) % N;
+                    const dot = dx[idx] * normals[idx].x + dz[idx] * normals[idx].z;
+                    if (dot > 0) {
+                        alpha[idx] -= 0.03;
+                    } else {
+                        alpha[idx] += 0.03;
+                    }
+                }
+            } else {
+                console.log(`[OPTIMIZER] Shifting trajectory outward by 0.02m at all turns.`);
+                for (let i = 0; i < N; i++) {
+                    if (isTurn[i]) {
+                        const dot = dx[i] * normals[i].x + dz[i] * normals[i].z;
+                        if (dot > 0) {
+                            alpha[i] -= 0.02;
+                        } else {
+                            alpha[i] += 0.02;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Enforce boundary constraints
+        for (let i = 0; i < N; i++) {
+            alpha[i] = Math.max(-maxShift, Math.min(maxShift, alpha[i]));
+        }
+
+        // Save current generated settings as candidate for the next lap run
+        this.candidateSpeeds.set(trackId, new Float64Array(targetSpeed));
+        this.candidateAlpha.set(trackId, new Float32Array(alpha));
+
+        // 6. Generate 3D coordinates based on optimized alpha offsets
+        const getPoint = (idx: number, shift: number): TrackPoint => {
+            const c = rawTrack[idx];
+            const n = normals[idx];
+            return {
+                x: c.x + n.x * shift,
+                y: c.y + n.y * shift,
+                z: c.z + n.z * shift
+            };
+        };
+
+        const optPoints = rawTrack.map((_, idx) => getPoint(idx, alpha[idx]));
+
+        // 7. Calculate dynamic velocity limits under mechanical forces (curvature, lateral Gs)
+        const velocities = new Float64Array(N);
+        const maxV = 320 / 3.6;
+        const g = 9.81;
+        const mu = 0.8;
+        for (let i = 0; i < N; i++) {
+            const prev = optPoints[(i - 1 + N) % N];
+            const curr = optPoints[i];
+            const next = optPoints[(i + 1) % N];
+            const d1 = dist(curr, prev);
+            const d2 = dist(next, curr);
+            const d_tot = dist(next, prev);
+            let curvature = 0.0001;
+            if (d1 > 0 && d2 > 0 && d_tot > 0) {
+                const area = 0.5 * Math.abs(
+                    (curr.x - prev.x) * (next.z - curr.z) -
+                    (curr.z - prev.z) * (next.x - curr.x)
+                );
+                curvature = (4.0 * area) / (d1 * d2 * d_tot);
+            }
+            const vLimit = Math.sqrt((mu * g) / Math.max(curvature, 0.0001));
+            const R = 1.0 / Math.max(curvature, 0.0001);
+            const vFlip = Math.sqrt((g * R * 1.0) / (2.0 * 0.3));
+            velocities[i] = Math.min(vLimit, vFlip, maxV, targetSpeed[i]);
+        }
+
+        // Apply braking and acceleration limits
+        const a_accel_arr = new Float64Array(N).fill(8.5);
+        const a_decel_arr = new Float64Array(N).fill(22.0);
+
+        for (let iter = 0; iter < 2; iter++) {
+            for (let i = N - 1; i >= 0; i--) {
+                const nextIdx = (i + 1) % N;
+                const distance = dist(optPoints[i], optPoints[nextIdx]);
+                const brakeCap = Math.sqrt(velocities[nextIdx] * velocities[nextIdx] + 2.0 * a_decel_arr[i] * distance);
+                velocities[i] = Math.min(velocities[i], brakeCap);
+            }
+        }
+        for (let iter = 0; iter < 2; iter++) {
+            for (let i = 0; i < N; i++) {
+                const nextIdx = (i + 1) % N;
+                const distance = dist(optPoints[i], optPoints[nextIdx]);
+                const accelCap = Math.sqrt(velocities[i] * velocities[i] + 2.0 * a_accel_arr[i] * distance);
+                velocities[nextIdx] = Math.min(velocities[nextIdx], accelCap);
+            }
+        }
+
+        const optProfilePoints: OptimizedPoint[] = optPoints.map((p, idx) => ({
+            pointIndex: idx,
+            x: p.x,
+            y: p.y || 0,
+            z: p.z,
+            targetSpeed: velocities[idx]
+        }));
+
+        const nextLap = lapNumber + 1;
+        await this.saveOptimizedProfile(trackId, optProfilePoints, nextLap);
+        console.log(`[DATABASE] Saved evolution pass for Lap ${nextLap}`);
+        return { points: optProfilePoints, nextLap };
     }
 }

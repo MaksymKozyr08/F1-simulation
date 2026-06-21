@@ -355,6 +355,13 @@ class RWIDVehiclePhysics {
         this.state.heading = 0.0;
         this.state.omegaLeft = 0.0;
         this.state.omegaRight = 0.0;
+        this.state.sLeft = 0.0;
+        this.state.sRight = 0.0;
+        this.state.kLeft = 0.0;
+        this.state.kRight = 0.0;
+        this.state.T_left = 0.0;
+        this.state.T_right = 0.0;
+        this.state.deltaT = 0.0;
         this.state.pLoss = 0.0;
         this.state.asrActive = false;
         this.state.isFlipped = false;
