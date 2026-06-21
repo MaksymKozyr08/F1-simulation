@@ -2,6 +2,24 @@ import * as THREE from 'three';
 import { Car } from './visual/car';
 import { createTrack } from './visual/track';
 import { scene } from './visual/scene';
+import { optimizeTrajectory, generateSpeedProfile } from './optimizer/client-optimizer';
+
+export interface TelemetryPoint {
+    pointIndex: number;
+    x: number;
+    y: number;
+    z: number;
+    heading: number;
+    curvature: number;
+}
+
+export interface OptimizedPoint {
+    pointIndex: number;
+    x: number;
+    y: number;
+    z: number;
+    targetSpeed: number;
+}
 
 // @ts-ignore
 import physicsCode from './physics/physics.js?raw';
@@ -28,6 +46,17 @@ const { setupRender, runRender, cycleCamera, setRenderCurve } = await import('./
 // Capturing state and instances
 let activeCurve: THREE.CatmullRomCurve3 | null = null;
 let activeCarInstance: Car | null = null;
+let baselineCurve: THREE.CatmullRomCurve3 | null = null;
+let optimizedCurve: THREE.CatmullRomCurve3 | null = null;
+
+// AI Optimizer Mode state
+let isOptimizerMode = false;
+let optimizedSpeeds: number[] | null = null;
+
+// Tyre pressure and temperature simulation states
+const wheelTemps = { fl: 35, fr: 35, rl: 35, rr: 35 };
+const wheelPressures = { fl: 1.40, fr: 1.40, rl: 1.40, rr: 1.40 }; // bar
+const pressureHistory: { fl: number; fr: number; rl: number; rr: number; }[] = [];
 
 // Active curve is captured from setupRender output or rebuildTrack
 
@@ -138,16 +167,23 @@ function rebuildTrack(trackId: string) {
     const points = generateTrackPoints(trackId);
     const newTrack = createTrack(points);
     
+    optimizedSpeeds = null;
+    
     const oldTrackGroup = findTrackGroup();
     if (oldTrackGroup) {
         scene.remove(oldTrackGroup);
     }
     
     scene.add(newTrack.trackGroup);
-    activeCurve = newTrack.curve;
-    
-    // Update render module's curve
-    setRenderCurve(newTrack.curve);
+    baselineCurve = newTrack.curve;
+    optimizedCurve = null;
+    if (isOptimizerMode && optimizedCurve) {
+        activeCurve = optimizedCurve;
+        setRenderCurve(optimizedCurve);
+    } else {
+        activeCurve = baselineCurve;
+        setRenderCurve(baselineCurve);
+    }
     
     // Reset vehicle variables
     distance = 0;
@@ -263,7 +299,7 @@ function recordCompletedLap(lapNum: number, time: number, maxSpeed: number, avgC
 
 // Update telemetry status pill (Autonomous / Manual Drive)
 function updateStatusPill() {
-    const statusPill = document.querySelector('.status-pill');
+    const statusPill = document.getElementById('drive-status-pill');
     if (statusPill) {
         if (isManual) {
             statusPill.textContent = 'MANUAL DRIVE';
@@ -331,6 +367,171 @@ async function init() {
             cycleCamera();
         });
     }
+
+    // View switching navigation handlers
+    const navVisualizer = document.getElementById('visualizer-tab');
+    const navOptimizer = document.getElementById('optimizer-tab');
+    const optimizerContainer = document.getElementById('optimizer-container');
+
+    const setSidebarManualControlsLocked = (locked: boolean) => {
+        const speedGroup = document.getElementById('slider-speed')?.closest('.control-group') as HTMLElement;
+        const steeringGroup = document.getElementById('slider-steering')?.closest('.control-group') as HTMLElement;
+        const speedInput = document.getElementById('slider-speed') as HTMLInputElement;
+        const steeringInput = document.getElementById('slider-steering') as HTMLInputElement;
+        
+        if (locked) {
+            if (speedGroup) speedGroup.style.display = 'none';
+            if (steeringGroup) steeringGroup.style.display = 'none';
+            if (speedInput) speedInput.disabled = true;
+            if (steeringInput) steeringInput.disabled = true;
+        } else {
+            if (speedGroup) speedGroup.style.display = 'block';
+            if (steeringGroup) steeringGroup.style.display = 'block';
+            if (speedInput) speedInput.disabled = false;
+            if (steeringInput) steeringInput.disabled = false;
+        }
+    };
+
+    if (navVisualizer && navOptimizer && optimizerContainer) {
+        navVisualizer.addEventListener('click', (e) => {
+            e.preventDefault();
+            navOptimizer.classList.remove('active');
+            navVisualizer.classList.add('active');
+            
+            // Hide the HUD overlay, but the canvas container remains visible/block
+            optimizerContainer.style.display = 'none';
+            isOptimizerMode = false;
+            setSidebarManualControlsLocked(false);
+            
+            // Do not swap curves
+        });
+
+        navOptimizer.addEventListener('click', (e) => {
+            e.preventDefault();
+            navVisualizer.classList.remove('active');
+            navOptimizer.classList.add('active');
+            
+            // Show the HUD overlay on top of the canvas
+            optimizerContainer.style.display = 'block';
+            isOptimizerMode = true;
+            setSidebarManualControlsLocked(true);
+            
+            // Do not swap curves
+            
+            // Redraw chart when entering optimizer tab
+            setTimeout(drawTyrePressureChart, 50);
+        });
+    }
+
+    // Optimization execution listener
+    const btnRunOpt = document.getElementById('btn-run-optimization');
+    const optStatusPill = document.getElementById('opt-status-pill');
+
+    if (btnRunOpt) {
+        btnRunOpt.addEventListener('click', async () => {
+            if (optStatusPill) {
+                optStatusPill.textContent = 'OPTIMIZING...';
+                optStatusPill.style.backgroundColor = '#ff9f1c';
+                optStatusPill.style.color = '#12131c';
+            }
+
+            setTimeout(async () => {
+                try {
+                    const currentTrack = getActiveTrackFromDOM();
+                    const centerline = generateTrackPoints(currentTrack);
+                    
+                    const rawPoints: TelemetryPoint[] = centerline.map((p, idx) => ({
+                        pointIndex: idx,
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        heading: 0,
+                        curvature: 0
+                    }));
+
+                    let optPoints: THREE.Vector3[] = [];
+                    let speedProfile: number[] = [];
+                    let useBackend = false;
+
+                    try {
+                        // 1. Send exploratory centerline lap telemetry to database
+                        console.log('[API BRIDGE] Sending exploration centerline telemetry to database...');
+                        await fetch('http://localhost:3001/api/telemetry', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ trackId: currentTrack, lapNumber: 1, points: rawPoints })
+                        });
+
+                        // 2. Fetch optimized trajectory and speed profile from API
+                        console.log('[API BRIDGE] Fetching optimized race profile from database server...');
+                        const response = await fetch('http://localhost:3001/api/optimize', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ trackId: currentTrack, rawPoints })
+                        });
+                        const data = await response.json();
+                        
+                        if (data && data.success && data.points) {
+                            console.log("Database response:", data);
+                            const optProfile: OptimizedPoint[] = data.points;
+                            optPoints = optProfile.map(p => new THREE.Vector3(p.x, p.y, p.z));
+                            speedProfile = optProfile.map(p => p.targetSpeed);
+                            useBackend = true;
+                        }
+                    } catch (err: any) {
+                        console.error("Database offline:", err);
+                    }
+
+                    if (!useBackend) {
+                        // Local RAM Fallback: Run the pure client-side mathematical array operations in local RAM
+                        console.log('[RAM FALLBACK] Running local Elastic Line path optimizer and velocity profiling.');
+                        const optPointsLocal = optimizeTrajectory(centerline, 1.0, 0.20, 600, 0.02);
+                        
+                        const frictionSlider = document.getElementById('slider-friction') as HTMLInputElement;
+                        const tireFriction = frictionSlider ? parseFloat(frictionSlider.value) : 0.80;
+                        
+                        speedProfile = generateSpeedProfile(optPointsLocal, tireFriction, 320, 8.5, 22.0);
+                        optPoints = optPointsLocal.map(p => new THREE.Vector3(p.x, p.y, p.z));
+                    }
+
+                    const newTrack = createTrack(optPoints);
+                    optimizedCurve = newTrack.curve;
+                    
+                    activeCurve = optimizedCurve;
+                    setRenderCurve(optimizedCurve);
+                    
+                    for (const child of scene.children) {
+                        if (child instanceof THREE.Group && child !== activeCarInstance?.mesh) {
+                            const hasLines = child.children.some(c => c instanceof THREE.Line);
+                            if (hasLines) {
+                                scene.remove(child);
+                                break;
+                            }
+                        }
+                    }
+                    scene.add(newTrack.trackGroup);
+
+                    optimizedSpeeds = speedProfile;
+
+                    if (optStatusPill) {
+                        optStatusPill.textContent = 'ACTIVE';
+                        optStatusPill.style.backgroundColor = '#00ff88';
+                        optStatusPill.style.color = '#12131c';
+                    }
+                    
+                    console.log(`[OPTIMIZATION COMPLETE] Swapped tracking spline for ${currentTrack}. Total optimized speed profile points: ${optimizedSpeeds.length}`);
+                } catch (err) {
+                    console.error('[OPTIMIZATION FAILED]', err);
+                    if (optStatusPill) {
+                        optStatusPill.textContent = 'FAILED';
+                        optStatusPill.style.backgroundColor = '#ff1801';
+                        optStatusPill.style.color = '#fff';
+                    }
+                }
+            }, 100);
+        });
+    }
+
     animate(lastTime);
     console.log("F1 Connection & Orchestration Layer Initialized.");
 }
@@ -359,6 +560,11 @@ function animate(currentTime: number) {
 
     // Extract raw variables from sliders/modes
     let currentTargetSpeed = speedSlider ? parseInt(speedSlider.value, 10) : 120;
+    if (optimizedSpeeds && optimizedSpeeds.length > 0 && !isManual) {
+        const idx = Math.floor(progressT * (optimizedSpeeds.length - 1));
+        const targetMPerS = optimizedSpeeds[Math.max(0, Math.min(optimizedSpeeds.length - 1, idx))];
+        currentTargetSpeed = targetMPerS * 3.6; // convert back to km/h for the physics engine
+    }
     let currentSteerAngle = steerSlider ? parseFloat(steerSlider.value) : 0;
     const mode = getDrivingModeFromDOM();
 
@@ -520,8 +726,13 @@ function animate(currentTime: number) {
             }
         }
         
-        // Execute graphics rendering loop (optimized: passing precalculated position and tangent vectors)
+        // Always execute graphics rendering loop (so 3D viewport stays updated and active)
         runRender(progressT, closestCenter, closestTangent);
+        
+        if (isOptimizerMode) {
+            // Update the dedicated UI static telemetry optimizer dashboard
+            updateOptimizerDashboard(state, dt);
+        }
         
         // Override car position and orientation using physical state vector
         const finalPosition = closestCenter.clone().add(closestNormal.clone().multiplyScalar(cte));
@@ -605,5 +816,221 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => {
     keys[e.code] = false;
 });
+
+
+
+function updateOptimizerDashboard(state: any, dt: number) {
+    // 1. Text telemetry updates
+    const speedKmh = state.vx * 3.6;
+    const optTelSpeed = document.getElementById('opt-tel-speed');
+    if (optTelSpeed) {
+        optTelSpeed.innerHTML = `${speedKmh.toFixed(1)} <span style="font-size: 0.9rem; color: var(--text-light);">km/h</span>`;
+    }
+    
+    const optTelTime = document.getElementById('opt-tel-time');
+    if (optTelTime) {
+        const mins = Math.floor(lapTime / 60);
+        const secs = Math.floor(lapTime % 60);
+        const ms = Math.floor((lapTime * 100) % 100);
+        optTelTime.textContent = `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+    }
+
+    const optTelDistance = document.getElementById('opt-tel-distance');
+    if (optTelDistance) {
+        optTelDistance.innerHTML = `${distance.toFixed(1)} <span style="font-size: 0.9rem; color: var(--text-light);">m</span>`;
+    }
+
+    // 2. Tyre Pressure & Temperature Simulation
+    // Model turning radius from active steering angle
+    const steeringAngle = activePhysicsInstance?.state?.steeringAngle || 0.0;
+    const turnRadius = 2.662 / Math.max(0.0001, Math.abs(steeringAngle));
+    const ay = (state.vx * state.vx) / turnRadius;
+    const ax = activePhysicsInstance ? (state.vx - (activePhysicsInstance as any).prevSpeedError) / dt : 0.0;
+    
+    // Tire load calculation
+    const baseLoad = (1300 * 9.81) / 4.0;
+    const weightTransferLat = (1300 * ay * 0.3) / 1.4375;
+    const weightTransferLong = (1300 * ax * 0.3) / 2.662;
+
+    const loadFL = Math.max(100, baseLoad - 0.5 * weightTransferLat - 0.5 * weightTransferLong);
+    const loadFR = Math.max(100, baseLoad + 0.5 * weightTransferLat - 0.5 * weightTransferLong);
+    const loadRL = Math.max(100, baseLoad - 0.5 * weightTransferLat + 0.5 * weightTransferLong);
+    const loadRR = Math.max(100, baseLoad + 0.5 * weightTransferLat + 0.5 * weightTransferLong);
+
+    // Friction heat generation (slip power loss proxy)
+    const slipL = Math.abs(state.sLeft || 0.0);
+    const slipR = Math.abs(state.sRight || 0.0);
+
+    const qFL = loadFL * 0.000025 * Math.abs(state.yawRate || 0.0);
+    const qFR = loadFR * 0.000025 * Math.abs(state.yawRate || 0.0);
+    const qRL = loadRL * 0.000025 * slipL;
+    const qRR = loadRR * 0.000025 * slipR;
+
+    const tempSlider = document.getElementById('slider-temperature') as HTMLInputElement;
+    const trackTemp = tempSlider ? parseFloat(tempSlider.value) : 35;
+    const coolingRate = 0.45;
+
+    // Update wheel temperatures
+    wheelTemps.fl += (qFL - coolingRate * (wheelTemps.fl - trackTemp)) * dt;
+    wheelTemps.fr += (qFR - coolingRate * (wheelTemps.fr - trackTemp)) * dt;
+    wheelTemps.rl += (qRL - coolingRate * (wheelTemps.rl - trackTemp)) * dt;
+    wheelTemps.rr += (qRR - coolingRate * (wheelTemps.rr - trackTemp)) * dt;
+
+    // Clamp wheel temperatures to realistic range
+    wheelTemps.fl = Math.max(trackTemp, Math.min(140, wheelTemps.fl));
+    wheelTemps.fr = Math.max(trackTemp, Math.min(140, wheelTemps.fr));
+    wheelTemps.rl = Math.max(trackTemp, Math.min(140, wheelTemps.rl));
+    wheelTemps.rr = Math.max(trackTemp, Math.min(140, wheelTemps.rr));
+
+    // Update wheel pressures (cold bar baseline + temperature scaling)
+    wheelPressures.fl = 1.40 + 0.0035 * (wheelTemps.fl - trackTemp);
+    wheelPressures.fr = 1.40 + 0.0035 * (wheelTemps.fr - trackTemp);
+    wheelPressures.rl = 1.40 + 0.0035 * (wheelTemps.rl - trackTemp);
+    wheelPressures.rr = 1.40 + 0.0035 * (wheelTemps.rr - trackTemp);
+
+    const psiFL = wheelPressures.fl * 14.5038;
+    const psiFR = wheelPressures.fr * 14.5038;
+    const psiRL = wheelPressures.rl * 14.5038;
+    const psiRR = wheelPressures.rr * 14.5038;
+
+    // Update DOM labels
+    const optFL = document.getElementById('opt-tyre-fl');
+    const optFR = document.getElementById('opt-tyre-fr');
+    const optRL = document.getElementById('opt-tyre-rl');
+    const optRR = document.getElementById('opt-tyre-rr');
+
+    if (optFL) optFL.innerHTML = `${wheelPressures.fl.toFixed(2)} <span style="font-size: 0.8rem; color: var(--text-light);">bar</span> <span style="font-size: 0.8rem; color: var(--text-muted);">(${psiFL.toFixed(1)} PSI)</span>`;
+    if (optFR) optFR.innerHTML = `${wheelPressures.fr.toFixed(2)} <span style="font-size: 0.8rem; color: var(--text-light);">bar</span> <span style="font-size: 0.8rem; color: var(--text-muted);">(${psiFR.toFixed(1)} PSI)</span>`;
+    if (optRL) optRL.innerHTML = `${wheelPressures.rl.toFixed(2)} <span style="font-size: 0.8rem; color: var(--text-light);">bar</span> <span style="font-size: 0.8rem; color: var(--text-muted);">(${psiRL.toFixed(1)} PSI)</span>`;
+    if (optRR) optRR.innerHTML = `${wheelPressures.rr.toFixed(2)} <span style="font-size: 0.8rem; color: var(--text-light);">bar</span> <span style="font-size: 0.8rem; color: var(--text-muted);">(${psiRR.toFixed(1)} PSI)</span>`;
+
+    const optTempFL = document.getElementById('opt-temp-fl');
+    const optTempFR = document.getElementById('opt-temp-fr');
+    const optTempRL = document.getElementById('opt-temp-rl');
+    const optTempRR = document.getElementById('opt-temp-rr');
+
+    if (optTempFL) optTempFL.textContent = `${wheelTemps.fl.toFixed(1)} °C`;
+    if (optTempFR) optTempFR.textContent = `${wheelTemps.fr.toFixed(1)} °C`;
+    if (optTempRL) optTempRL.textContent = `${wheelTemps.rl.toFixed(1)} °C`;
+    if (optTempRR) optTempRR.textContent = `${wheelTemps.rr.toFixed(1)} °C`;
+
+    // Add to pressure timeline history
+    pressureHistory.push({ fl: psiFL, fr: psiFR, rl: psiRL, rr: psiRR });
+    if (pressureHistory.length > 100) {
+        pressureHistory.shift();
+    }
+
+    drawTyrePressureChart();
+}
+
+function drawTyrePressureChart() {
+    const canvas = document.getElementById('tyre-pressure-chart') as HTMLCanvasElement;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const rect = canvas.getBoundingClientRect();
+    if (canvas.width !== rect.width || canvas.height !== rect.height) {
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+    }
+
+    const w = canvas.width;
+    const h = canvas.height;
+
+    // Clear background
+    ctx.fillStyle = '#171821'; // matching var(--bg-card)
+    ctx.fillRect(0, 0, w, h);
+
+    const padL = 35;
+    const padR = 15;
+    const padT = 30;
+    const padB = 20;
+
+    const graphW = w - padL - padR;
+    const graphH = h - padT - padB;
+
+    // Grid lines & labels
+    ctx.strokeStyle = '#27283b';
+    ctx.lineWidth = 1;
+    ctx.font = '10px monospace';
+    ctx.fillStyle = '#8892b0';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+
+    const minPsi = 19.5;
+    const maxPsi = 22.5;
+
+    const getY = (val: number) => {
+        const pct = (val - minPsi) / (maxPsi - minPsi);
+        return h - padB - pct * graphH;
+    };
+
+    const getX = (idx: number) => {
+        return padL + (idx / 99) * graphW;
+    };
+
+    // Draw Y ticks
+    for (let i = 0; i <= 3; i++) {
+        const val = minPsi + (i / 3) * (maxPsi - minPsi);
+        const y = getY(val);
+        
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(w - padR, y);
+        ctx.stroke();
+
+        ctx.fillText(`${val.toFixed(1)}`, padL - 6, y);
+    }
+
+    if (pressureHistory.length < 2) {
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '11px var(--font-body)';
+        ctx.fillStyle = '#8892b0';
+        ctx.fillText('WAITING FOR TELEMETRY DATA...', w / 2, h / 2);
+        return;
+    }
+
+    const wheels = [
+        { key: 'fl', color: '#ff1801', name: 'FL' },
+        { key: 'fr', color: '#00ff88', name: 'FR' },
+        { key: 'rl', color: '#00e5ff', name: 'RL' },
+        { key: 'rr', color: '#ffeb3b', name: 'RR' }
+    ] as const;
+
+    // Draw lines
+    wheels.forEach(wInfo => {
+        ctx.beginPath();
+        ctx.strokeStyle = wInfo.color;
+        ctx.lineWidth = 1.8;
+        
+        for (let i = 0; i < pressureHistory.length; i++) {
+            const val = pressureHistory[i][wInfo.key];
+            const x = getX(i);
+            const y = getY(val);
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    });
+
+    // Draw Legend
+    ctx.font = '10px var(--font-header)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    let legendX = padL + 10;
+    wheels.forEach(wInfo => {
+        ctx.fillStyle = wInfo.color;
+        ctx.fillRect(legendX, 10, 10, 6);
+        ctx.fillStyle = '#f3f4f6';
+        ctx.fillText(wInfo.name, legendX + 14, 13);
+        legendX += 45;
+    });
+}
 
 init();

@@ -100,6 +100,7 @@ body {
 
 .header-nav {
   display: flex;
+  gap: 1.5rem;
 }
 
 .nav-link {
@@ -107,10 +108,21 @@ body {
   font-family: var(--font-header);
   font-weight: 700;
   font-size: 0.85rem;
-  color: var(--text-main);
+  color: var(--text-light);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding: 4px 0;
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition-speed);
+  cursor: pointer;
+}
+
+.nav-link:hover {
+  color: var(--text-main);
+}
+
+.nav-link.active {
+  color: var(--text-main);
   border-bottom: 2px solid var(--border-dark);
 }
 
@@ -515,6 +527,7 @@ body {
   background-color: var(--bg-color);
   overflow-y: auto;
   max-height: calc(100vh - 84px);
+  position: relative;
 }
 
 /* Stark Track Display Box */
@@ -527,6 +540,56 @@ body {
   border: 2px solid var(--border-dark);
   display: flex;
   flex-direction: column;
+}
+
+#canvas-container {
+  display: block !important;
+  visibility: visible !important;
+}
+
+/* Glassmorphism HUD Overlay positioned at bottom right on top of viewport */
+.hud-overlay {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  width: 520px;
+  height: 465px;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.75) !important;
+  border: 1px solid var(--border-dark);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  padding: 15px;
+  overflow: hidden;
+}
+
+.hud-overlay * {
+  pointer-events: auto;
+}
+
+/* Semi-transparent panel adjustments for glassmorphism */
+.hud-overlay .opt-telemetry-panel {
+  background: rgba(23, 24, 33, 0.6) !important;
+  border: 1px solid rgba(255, 24, 1, 0.25) !important;
+  margin-bottom: 8px;
+  padding: 8px 12px !important;
+}
+
+.hud-overlay .viewer-body {
+  background: transparent !important;
+  padding: 0 !important;
+  overflow-y: auto;
+}
+
+.hud-overlay .viewer-header {
+  background: rgba(31, 32, 46, 0.8) !important;
+  padding: 6px 10px !important;
+  border-bottom: 1px solid var(--border-dark);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
 }
 
 .viewer-header {
@@ -916,4 +979,16 @@ input:checked + .toggle-slider:before {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* Force 3D viewport canvas container to stay block and visible */
+#canvas-container {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  position: relative;
+}
+
+#canvas-container .viewer-body {
+  height: calc(100% - 40px);
 }
