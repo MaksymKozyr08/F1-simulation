@@ -371,39 +371,30 @@ async function init() {
     // View switching navigation handlers
     const navVisualizer = document.getElementById('visualizer-tab');
     const navOptimizer = document.getElementById('optimizer-tab');
-    const optimizerContainer = document.getElementById('optimizer-container');
+    const appEl = document.getElementById('app');
 
     const setSidebarManualControlsLocked = (locked: boolean) => {
-        const speedGroup = document.getElementById('slider-speed')?.closest('.control-group') as HTMLElement;
-        const steeringGroup = document.getElementById('slider-steering')?.closest('.control-group') as HTMLElement;
         const speedInput = document.getElementById('slider-speed') as HTMLInputElement;
         const steeringInput = document.getElementById('slider-steering') as HTMLInputElement;
-        
-        if (locked) {
-            if (speedGroup) speedGroup.style.display = 'none';
-            if (steeringGroup) steeringGroup.style.display = 'none';
-            if (speedInput) speedInput.disabled = true;
-            if (steeringInput) steeringInput.disabled = true;
-        } else {
-            if (speedGroup) speedGroup.style.display = 'block';
-            if (steeringGroup) steeringGroup.style.display = 'block';
-            if (speedInput) speedInput.disabled = false;
-            if (steeringInput) steeringInput.disabled = false;
-        }
+        if (speedInput) speedInput.disabled = locked;
+        if (steeringInput) steeringInput.disabled = locked;
     };
 
-    if (navVisualizer && navOptimizer && optimizerContainer) {
+    if (navVisualizer && navOptimizer && appEl) {
         navVisualizer.addEventListener('click', (e) => {
             e.preventDefault();
             navOptimizer.classList.remove('active');
             navVisualizer.classList.add('active');
             
-            // Hide the HUD overlay, but the canvas container remains visible/block
-            optimizerContainer.style.display = 'none';
+            appEl.setAttribute('data-view', 'visualizer');
             isOptimizerMode = false;
             setSidebarManualControlsLocked(false);
             
-            // Do not swap curves
+            // Set the car to follow the standard centerline path (baselineCurve)
+            if (baselineCurve) {
+                activeCurve = baselineCurve;
+                setRenderCurve(baselineCurve);
+            }
         });
 
         navOptimizer.addEventListener('click', (e) => {
@@ -411,12 +402,15 @@ async function init() {
             navVisualizer.classList.remove('active');
             navOptimizer.classList.add('active');
             
-            // Show the HUD overlay on top of the canvas
-            optimizerContainer.style.display = 'block';
+            appEl.setAttribute('data-view', 'optimizer');
             isOptimizerMode = true;
             setSidebarManualControlsLocked(true);
             
-            // Do not swap curves
+            // Set the car to follow the optimized racing line (optimizedCurve)
+            if (optimizedCurve) {
+                activeCurve = optimizedCurve;
+                setRenderCurve(optimizedCurve);
+            }
             
             // Redraw chart when entering optimizer tab
             setTimeout(drawTyrePressureChart, 50);
@@ -440,46 +434,53 @@ async function init() {
                     const currentTrack = getActiveTrackFromDOM();
                     const centerline = generateTrackPoints(currentTrack);
                     
-                    const rawPoints: TelemetryPoint[] = centerline.map((p, idx) => ({
-                        pointIndex: idx,
-                        x: p.x,
-                        y: p.y,
-                        z: p.z,
-                        heading: 0,
-                        curvature: 0
-                    }));
+
 
                     let optPoints: THREE.Vector3[] = [];
                     let speedProfile: number[] = [];
                     let useBackend = false;
 
                     try {
+                        const payload = {
+                            trackId: currentTrack,
+                            lap_number: 1,
+                            car_coordinates: centerline.map(p => ({ x: p.x, z: p.z })),
+                            velocity_profile: centerline.map(() => 0),
+                            timestamp: new Date().toISOString()
+                        };
+                        console.log("[DISPATCH] Dispatching telemetry payload to backend:", payload);
+
                         // 1. Send exploratory centerline lap telemetry to database
-                        console.log('[API BRIDGE] Sending exploration centerline telemetry to database...');
-                        await fetch('http://localhost:3001/api/telemetry', {
+                        const telResponse = await fetch('http://localhost:3001/api/telemetry', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ trackId: currentTrack, lapNumber: 1, points: rawPoints })
+                            body: JSON.stringify(payload)
                         });
+                        if (!telResponse.ok) {
+                            throw new Error(`Telemetry POST failed with HTTP status ${telResponse.status}`);
+                        }
 
                         // 2. Fetch optimized trajectory and speed profile from API
                         console.log('[API BRIDGE] Fetching optimized race profile from database server...');
                         const response = await fetch('http://localhost:3001/api/optimize', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ trackId: currentTrack, rawPoints })
+                            body: JSON.stringify(payload)
                         });
+                        if (!response.ok) {
+                            throw new Error(`Optimization POST failed with HTTP status ${response.status}`);
+                        }
                         const data = await response.json();
                         
                         if (data && data.success && data.points) {
-                            console.log("Database response:", data);
+                            console.log("SUCCESS: Track profiles written to PostgreSQL:", data);
                             const optProfile: OptimizedPoint[] = data.points;
                             optPoints = optProfile.map(p => new THREE.Vector3(p.x, p.y, p.z));
                             speedProfile = optProfile.map(p => p.targetSpeed);
                             useBackend = true;
                         }
-                    } catch (err: any) {
-                        console.error("Database offline:", err);
+                    } catch (connectionError: any) {
+                        console.error("FAIL: Server/DB unreachable. RAM Fallback active. Error:", connectionError);
                     }
 
                     if (!useBackend) {

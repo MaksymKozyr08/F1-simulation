@@ -106,8 +106,9 @@ export class TrajectoryOptimizer {
 
     public async saveRawTrackData(trackId: string, lapNumber: number, points: TelemetryPoint[]): Promise<boolean> {
         if (!this.useDB || !this.pgPool) {
-            RAM_RAW_TRACK_DB[`${trackId}_lap${lapNumber}`] = [...points];
-            return true;
+            const err = new Error("PostgreSQL database connection pool is not initialized.");
+            console.error("CRITICAL: PostgreSQL Insert Failed ->", err);
+            throw err;
         }
         try {
             const client = await this.pgPool.connect();
@@ -130,8 +131,8 @@ export class TrajectoryOptimizer {
                 client.release();
             }
         } catch (err) {
-            RAM_RAW_TRACK_DB[`${trackId}_lap${lapNumber}`] = [...points];
-            return false;
+            console.error("CRITICAL: PostgreSQL Insert Failed ->", err);
+            throw err;
         }
     }
 
@@ -155,8 +156,9 @@ export class TrajectoryOptimizer {
 
     public async saveOptimizedProfile(trackId: string, points: OptimizedPoint[]): Promise<boolean> {
         if (!this.useDB || !this.pgPool) {
-            RAM_OPTIMIZED_PROFILE_DB[trackId] = [...points];
-            return true;
+            const err = new Error("PostgreSQL database connection pool is not initialized.");
+            console.error("CRITICAL: PostgreSQL Insert Failed ->", err);
+            throw err;
         }
         try {
             const client = await this.pgPool.connect();
@@ -179,8 +181,8 @@ export class TrajectoryOptimizer {
                 client.release();
             }
         } catch (err) {
-            RAM_OPTIMIZED_PROFILE_DB[trackId] = [...points];
-            return false;
+            console.error("CRITICAL: PostgreSQL Insert Failed ->", err);
+            throw err;
         }
     }
 

@@ -543,8 +543,33 @@ body {
 }
 
 #canvas-container {
-  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column;
   visibility: visible !important;
+}
+
+/* View switching styles */
+#app[data-view="visualizer"] .optimizer-only {
+  display: none !important;
+}
+
+#app[data-view="optimizer"] .visualizer-only {
+  display: none !important;
+}
+
+#app[data-view="optimizer"] .optimizer-only {
+  display: block !important;
+}
+
+#app[data-view="optimizer"] div.optimizer-only {
+  display: block !important;
+}
+
+#app[data-view="optimizer"] .optimizer-only[style*="display: flex"],
+#app[data-view="optimizer"] .optimizer-only[style*="display:flex"] {
+  display: flex !important;
 }
 
 /* Glassmorphism HUD Overlay positioned at bottom right on top of viewport */

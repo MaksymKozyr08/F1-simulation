@@ -43,7 +43,7 @@
 
 
 <body>
-  <div id="app">
+  <div id="app" data-view="visualizer">
   <!-- Header -->
   <header class="app-header">
     <div class="header-logo">
@@ -57,7 +57,11 @@
       <span class="status-text" id="status-display">ENVIRONMENT: READY</span>
     </div>
 
-    <nav class="header-nav">
+    <nav class="header-nav" style="display: flex; align-items: center; gap: 1rem;">
+      <div class="optimizer-only" style="display: flex; align-items: center; gap: 8px;">
+        <button id="btn-run-optimization" class="camera-btn" style="background-color: var(--border-dark); border-color: var(--border-dark); color: #fff;">RUN OPTIMIZATION</button>
+        <div class="status-pill" id="opt-status-pill" style="background-color: #ff9f1c; color: #12131c;">OFFLINE</div>
+      </div>
       <a href="#optimizer" class="nav-link" id="optimizer-tab">AI Optimizer</a>
       <a href="#visualizer" class="nav-link active" id="visualizer-tab">Visualizer</a>
     </nav>
@@ -97,7 +101,9 @@
 
         <!-- Driving Tab Panel -->
         <div class="tab-panel active" id="panel-driving">
-          <div class="panel-section">
+          
+          <!-- Visualizer Mode: Driving Controls -->
+          <div class="panel-section visualizer-only">
             <h3 class="section-title">Driving Controls</h3>
 
             <!-- Target Speed Slider -->
@@ -134,8 +140,31 @@
             </div>
           </div>
 
-          <!-- INTEGRATED TELEMETRY HUD (Visible ONLY inside Driving tab) -->
-          <div class="sidebar-telemetry-container">
+          <!-- Optimizer Mode: Optimization Metrics -->
+          <div class="panel-section optimizer-only">
+            <h3 class="section-title">Optimization Metrics</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem;">
+              <div class="telemetry-item">
+                <span class="tel-label">Optimized Speed</span>
+                <span class="tel-value" id="opt-tel-speed">0.0 <span class="unit">km/h</span></span>
+              </div>
+              <div class="telemetry-item">
+                <span class="tel-label">Lap Time Prediction</span>
+                <span class="tel-value font-mono" id="opt-tel-time">0:00.00</span>
+              </div>
+              <div class="telemetry-item">
+                <span class="tel-label">Track Distance</span>
+                <span class="tel-value" id="opt-tel-distance">0.0 <span class="unit">m</span></span>
+              </div>
+              <div class="telemetry-item">
+                <span class="tel-label">Apex Convergence</span>
+                <span class="tel-value" id="opt-tel-convergence">--</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Visualizer Mode: Standard Telemetry HUD -->
+          <div class="sidebar-telemetry-container visualizer-only">
             <div class="panel-section">
               <h3 class="section-title">Telemetry HUD</h3>
 
@@ -196,6 +225,45 @@
               </div>
             </div>
           </div>
+
+          <!-- Optimizer Mode: Tyre Pressure & Wheel Telemetry -->
+          <div class="sidebar-telemetry-container optimizer-only">
+            <!-- Tyre Pressure Chart Card -->
+            <div class="panel-section">
+              <h3 class="section-title">Tyre Pressure Timeline (PSI)</h3>
+              <div class="canvas-chart-container" style="height: 120px;">
+                <canvas id="tyre-pressure-chart" width="300" height="120"></canvas>
+              </div>
+            </div>
+
+            <!-- Active Wheel Telemetry -->
+            <div class="panel-section">
+              <h3 class="section-title">Active Wheel Telemetry</h3>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem;">
+                <div class="telemetry-item">
+                  <span class="tel-label">FL Pressure</span>
+                  <span id="opt-tyre-fl" class="tel-value" style="font-size: 1rem;">1.40 <span class="unit">bar</span></span>
+                  <span id="opt-temp-fl" class="tel-label" style="font-size: 0.65rem; color: var(--text-muted);">35 °C</span>
+                </div>
+                <div class="telemetry-item">
+                  <span class="tel-label">FR Pressure</span>
+                  <span id="opt-tyre-fr" class="tel-value" style="font-size: 1rem;">1.40 <span class="unit">bar</span></span>
+                  <span id="opt-temp-fr" class="tel-label" style="font-size: 0.65rem; color: var(--text-muted);">35 °C</span>
+                </div>
+                <div class="telemetry-item">
+                  <span class="tel-label">RL Pressure</span>
+                  <span id="opt-tyre-rl" class="tel-value" style="font-size: 1rem;">1.40 <span class="unit">bar</span></span>
+                  <span id="opt-temp-rl" class="tel-label" style="font-size: 0.65rem; color: var(--text-muted);">35 °C</span>
+                </div>
+                <div class="telemetry-item">
+                  <span class="tel-label">RR Pressure</span>
+                  <span id="opt-tyre-rr" class="tel-value" style="font-size: 1rem;">1.40 <span class="unit">bar</span></span>
+                  <span id="opt-temp-rr" class="tel-label" style="font-size: 0.65rem; color: var(--text-muted);">35 °C</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <!-- Tuning & Physics Tab Panel -->
@@ -339,92 +407,6 @@
         <div class="viewer-body">
           <h2 id="active-track-display" class="large-track-text">MONACO GP</h2>
           <p id="active-track-details" class="track-details-text">Monte Carlo, Monaco • Length: 3.337 km</p>
-        </div>
-      </div>
-
-      <!-- Dedicated UI Presentation Mode (AI Optimizer Dashboard) -->
-      <div id="optimizer-container" class="hud-overlay" style="display: none;">
-        <div class="viewer-header">
-          <span class="viewer-title">AI OPTIMIZATION DASHBOARD</span>
-          <div style="display: flex; gap: 8px; align-items: center;">
-            <button id="btn-run-optimization" class="camera-btn" style="background-color: var(--border-dark); border-color: var(--border-dark); color: #fff;">RUN OPTIMIZATION</button>
-            <div class="status-pill" id="opt-status-pill" style="background-color: #ff9f1c; color: #12131c;">OFFLINE</div>
-          </div>
-        </div>
-        <div class="viewer-body" style="display: flex; flex-direction: column; gap: 1.5rem; padding: 2rem; overflow-y: auto; height: 100%;">
-          
-          <!-- Static Telemetry HUD Panel -->
-          <div class="opt-telemetry-panel" style="padding: 1.5rem; border-radius: var(--radius-md);">
-            <h3 style="font-family: var(--font-header); font-weight: 700; font-size: 1.1rem; color: var(--border-dark); margin-bottom: 1rem; text-transform: uppercase;">Optimization Metrics</h3>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1.5rem;">
-              <div style="display: flex; flex-direction: column;">
-                <span style="font-size: 0.75rem; color: var(--text-light); text-transform: uppercase; font-family: var(--font-mono); margin-bottom: 0.2rem;">Optimized Speed</span>
-                <span id="opt-tel-speed" style="font-family: var(--font-mono); font-size: 2.2rem; font-weight: 700; color: var(--text-main);">0.0 <span style="font-size: 0.9rem; color: var(--text-light);">km/h</span></span>
-              </div>
-              <div style="display: flex; flex-direction: column;">
-                <span style="font-size: 0.75rem; color: var(--text-light); text-transform: uppercase; font-family: var(--font-mono); margin-bottom: 0.2rem;">Lap Time Prediction</span>
-                <span id="opt-tel-time" style="font-family: var(--font-mono); font-size: 2.2rem; font-weight: 700; color: var(--text-main);">0:00.00</span>
-              </div>
-              <div style="display: flex; flex-direction: column;">
-                <span style="font-size: 0.75rem; color: var(--text-light); text-transform: uppercase; font-family: var(--font-mono); margin-bottom: 0.2rem;">Track Distance</span>
-                <span id="opt-tel-distance" style="font-family: var(--font-mono); font-size: 2.2rem; font-weight: 700; color: var(--text-main);">0.0 <span style="font-size: 0.9rem; color: var(--text-light);">m</span></span>
-              </div>
-              <div style="display: flex; flex-direction: column;">
-                <span style="font-size: 0.75rem; color: var(--text-light); text-transform: uppercase; font-family: var(--font-mono); margin-bottom: 0.2rem;">Apex Convergence</span>
-                <span id="opt-tel-convergence" style="font-family: var(--font-mono); font-size: 2.2rem; font-weight: 700; color: var(--text-main);">--</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Tyre Pressure Chart & Dynamic Metrics Panel -->
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; min-height: 250px;">
-            
-            <!-- Tyre Pressure Chart Card -->
-            <div style="background: rgba(23, 24, 33, 0.6); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: var(--radius-md); display: flex; flex-direction: column;">
-              <h3 style="font-family: var(--font-header); font-weight: 700; font-size: 1rem; color: var(--text-main); margin-bottom: 1rem; text-transform: uppercase;">Tyre Pressure Timeline (PSI)</h3>
-              <div style="flex-grow: 1; position: relative;">
-                <canvas id="tyre-pressure-chart" width="400" height="200" style="width: 100%; height: 100%; min-height: 180px;"></canvas>
-              </div>
-            </div>
-
-            <!-- Tyre Load & Grip Indicator Layout -->
-            <div style="background: rgba(23, 24, 33, 0.6); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: var(--radius-md); display: flex; flex-direction: column;">
-              <h3 style="font-family: var(--font-header); font-weight: 700; font-size: 1rem; color: var(--text-main); margin-bottom: 1rem; text-transform: uppercase;">Active Wheel Telemetry</h3>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; flex-grow: 1; align-items: center;">
-                
-                <!-- Front Left -->
-                <div style="border-left: 3px solid var(--border-dark); padding-left: 0.8rem;">
-                  <div style="font-size: 0.7rem; color: var(--text-light); font-weight: 700; text-transform: uppercase;">Front Left</div>
-                  <div id="opt-tyre-fl" style="font-family: var(--font-mono); font-size: 1.3rem; font-weight: 700; color: var(--text-main);">1.40 <span style="font-size: 0.8rem; color: var(--text-light);">bar</span></div>
-                  <div id="opt-temp-fl" style="font-size: 0.75rem; color: var(--text-muted);">35 °C</div>
-                </div>
-
-                <!-- Front Right -->
-                <div style="border-left: 3px solid #00ff88; padding-left: 0.8rem;">
-                  <div style="font-size: 0.7rem; color: var(--text-light); font-weight: 700; text-transform: uppercase;">Front Right</div>
-                  <div id="opt-tyre-fr" style="font-family: var(--font-mono); font-size: 1.3rem; font-weight: 700; color: var(--text-main);">1.40 <span style="font-size: 0.8rem; color: var(--text-light);">bar</span></div>
-                  <div id="opt-temp-fr" style="font-size: 0.75rem; color: var(--text-muted);">35 °C</div>
-                </div>
-
-                <!-- Rear Left -->
-                <div style="border-left: 3px solid var(--border-dark); padding-left: 0.8rem;">
-                  <div style="font-size: 0.7rem; color: var(--text-light); font-weight: 700; text-transform: uppercase;">Rear Left</div>
-                  <div id="opt-tyre-rl" style="font-family: var(--font-mono); font-size: 1.3rem; font-weight: 700; color: var(--text-main);">1.40 <span style="font-size: 0.8rem; color: var(--text-light);">bar</span></div>
-                  <div id="opt-temp-rl" style="font-size: 0.75rem; color: var(--text-muted);">35 °C</div>
-                </div>
-
-                <!-- Rear Right -->
-                <div style="border-left: 3px solid #00ff88; padding-left: 0.8rem;">
-                  <div style="font-size: 0.7rem; color: var(--text-light); font-weight: 700; text-transform: uppercase;">Rear Right</div>
-                  <div id="opt-tyre-rr" style="font-family: var(--font-mono); font-size: 1.3rem; font-weight: 700; color: var(--text-main);">1.40 <span style="font-size: 0.8rem; color: var(--text-light);">bar</span></div>
-                  <div id="opt-temp-rr" style="font-size: 0.75rem; color: var(--text-muted);">35 °C</div>
-                </div>
-
-              </div>
-            </div>
-
-          </div>
-
         </div>
       </div>
 

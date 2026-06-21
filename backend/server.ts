@@ -37,30 +37,58 @@ const server = http.createServer(async (req: IncomingMessage, res: ServerRespons
         });
     };
 
+    interface OptimizationTelemetryPayload {
+        trackId: string;
+        lap_number: number;
+        car_coordinates: { x: number; z: number }[];
+        velocity_profile: number[];
+        timestamp: string;
+    }
+
     if (req.url === '/api/telemetry' && req.method === 'POST') {
         try {
-            const payload = await parseJsonBody<{ trackId: string; lapNumber: number; points: TelemetryPoint[] }>();
-            const success = await optimizer.saveRawTrackData(payload.trackId, payload.lapNumber || 1, payload.points);
+            const payload = await parseJsonBody<OptimizationTelemetryPayload>();
+            const trackId = payload.trackId || 'monaco';
+            const lapNumber = payload.lap_number || 1;
+            
+            // Map the parsed payload coordinates to TelemetryPoints
+            const points: TelemetryPoint[] = payload.car_coordinates.map((coord, idx) => ({
+                pointIndex: idx,
+                x: coord.x,
+                y: 0,
+                z: coord.z,
+                heading: 0,
+                curvature: 0
+            }));
+            
+            const success = await optimizer.saveRawTrackData(trackId, lapNumber, points);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success }));
         } catch (err: any) {
             console.error('[API ERROR] Failed to save telemetry:', err);
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Invalid Payload', details: err?.message }));
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Database/Server Error', details: err?.message }));
         }
     } 
     else if (req.url === '/api/optimize' && req.method === 'POST') {
         try {
-            const payload = await parseJsonBody<{ trackId: string; rawPoints: TelemetryPoint[] }>();
-            const trackId = payload.trackId;
+            const payload = await parseJsonBody<OptimizationTelemetryPayload>();
+            const trackId = payload.trackId || 'monaco';
+            const lapNumber = payload.lap_number || 1;
             
             // 1. Fetch raw centerline points from PostgreSQL database
-            let centerline: TrackPoint[] = await optimizer.getRawTrackData(trackId, 1);
+            let centerline: TrackPoint[] = await optimizer.getRawTrackData(trackId, lapNumber);
             
-            // Fallback to coordinates provided in the payload if database is empty
+            // Fallback to coordinates provided in the payload if database query returned empty
             if (!centerline || centerline.length === 0) {
                 console.log(`[API SERVER] Centerline not found in database for track ${trackId}. Using payload fallback.`);
-                centerline = payload.rawPoints;
+                centerline = payload.car_coordinates.map(pt => ({
+                    x: pt.x,
+                    y: 0,
+                    z: pt.z,
+                    heading: 0,
+                    curvature: 0
+                }));
             }
 
             // 2. Perform path optimization (Elastic Line Optimizer)
